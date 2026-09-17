@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>悬浮行情 App（BTC · iOS）设计文档</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f172a;
+  --bg-2:#1e293b;
+  --bg-3:#334155;
+  --line:#334155;
+  --border:#475569;
+  --fg:#e2e8f0;
+  --fg-dim:#94a3b8;
+  --fg-weak:#64748b;
+  --fg-strong:#f1f5f9;
+  --blue:#60a5fa;
+  --green:#4ade80;
+  --orange:#fb923c;
+  --red:#f87171;
+  --purple:#c4b5fd;
+  --cyan:#67e8f9;
+  --code-bg:#0b1220;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font-size:16px;
+  line-height:1.75;
+  font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+main{
+  max-width:1440px;
+  margin:0 auto;
+  padding:48px 300px 140px 40px;
+}
+article{max-width:1100px}
+h1{
+  font-size:30px;
+  color:var(--fg-strong);
+  border-bottom:2px solid var(--border);
+  padding-bottom:16px;
+  margin:0 0 8px;
+}
+h2{
+  font-size:23px;
+  color:var(--fg-strong);
+  border-left:4px solid var(--blue);
+  border-bottom:1px solid var(--line);
+  padding:0 0 8px 12px;
+  margin:56px 0 18px;
+}
+h3{
+  font-size:18px;
+  color:var(--fg-strong);
+  border-left:3px solid var(--border);
+  padding-left:10px;
+  margin:34px 0 12px;
+}
+h4{font-size:16px;color:var(--fg-strong);margin:22px 0 8px}
+p{margin:12px 0}
+b,strong{color:var(--fg-strong)}
+code{
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-radius:3px;
+  padding:1px 5px;
+  font-family:Consolas,Monaco,monospace;
+  font-size:14px;
+  color:var(--cyan);
+}
+pre{
+  background:var(--code-bg);
+  border-left:3px solid var(--border);
+  border-radius:3px;
+  padding:14px 16px;
+  overflow-x:auto;
+  font-family:Consolas,Monaco,monospace;
+  font-size:13.5px;
+  line-height:1.6;
+  color:var(--fg);
+}
+pre code{background:none;border:none;padding:0;color:var(--fg)}
+table{
+  width:100%;
+  border-collapse:collapse;
+  margin:18px 0;
+  font-size:14.5px;
+}
+th{
+  background:var(--bg-3);
+  color:var(--fg-strong);
+  text-align:left;
+  padding:9px 12px;
+  border:1px solid var(--border);
+  font-weight:600;
+}
+td{
+  padding:9px 12px;
+  border:1px solid var(--line);
+  vertical-align:top;
+}
+tbody tr:nth-child(even){background:rgba(30,41,59,.45)}
+.card{
+  background:var(--bg-2);
+  border-left:3px solid var(--blue);
+  padding:12px 16px;
+  margin:18px 0;
+  border-radius:3px;
+}
+blockquote{
+  background:var(--bg-2);
+  border-left:3px solid var(--orange);
+  margin:18px 0;
+  padding:12px 16px;
+  color:var(--fg);
+  border-radius:3px;
+}
+blockquote p{margin:6px 0}
+ul,ol{padding-left:26px;margin:12px 0}
+li{margin:6px 0}
+.meta{
+  color:var(--fg-weak);
+  font-size:14px;
+  margin-bottom:6px;
+}
+.ok{color:var(--green)}
+.no{color:var(--red)}
+.warn{color:var(--orange)}
+.tag{
+  display:inline-block;
+  border:1px solid var(--border);
+  color:var(--fg-dim);
+  border-radius:3px;
+  padding:0 7px;
+  font-size:12.5px;
+  margin-right:6px;
+}
+.toc{
+  position:fixed;
+  top:96px;
+  right:32px;
+  width:262px;
+  max-height:calc(100vh - 150px);
+  overflow-y:auto;
+  border-left:1px solid var(--line);
+  padding-left:16px;
+  font-size:13.5px;
+}
+.toc-title{
+  color:var(--fg-strong);
+  font-weight:600;
+  font-size:13px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  margin-bottom:10px;
+}
+.toc a{
+  display:block;
+  color:var(--fg-dim);
+  text-decoration:none;
+  padding:3px 0 3px 8px;
+  border-left:2px solid transparent;
+  margin-left:-2px;
+  line-height:1.5;
+}
+.toc a.sub{padding-left:20px;font-size:12.8px;color:var(--fg-weak)}
+.toc a:hover{color:var(--fg)}
+.toc a.active{color:var(--blue);border-left-color:var(--blue)}
+@media print{
+  :root{
+    color-scheme: light;
+    --bg:#ffffff;
+    --bg-2:#f4f6f8;
+    --bg-3:#e6e9ee;
+    --line:#c8ced8;
+    --border:#9aa4b2;
+    --fg:#14181f;
+    --fg-dim:#454d59;
+    --fg-weak:#6b7280;
+    --fg-strong:#000000;
+    --blue:#1d4ed8;
+    --green:#15803d;
+    --orange:#b45309;
+    --red:#b91c1c;
+    --purple:#6d28d9;
+    --cyan:#0e7490;
+    --code-bg:#f4f6f8;
+  }
+  body{background:#fff;color:#14181f}
+  main{padding:0;max-width:none}
+  article{max-width:none}
+  .toc{display:none}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<main>
+<article>
+
+<h1>悬浮行情 App（BTC · iOS）设计文档</h1>
+<p class="meta">项目代号 FloatingTicker ｜ 版本 v1.0 ｜ 日期 2026-09-17 ｜ 目标平台 iOS 17+ ｜ 形态：画中画悬浮行情条</p>
+
+<div class="card">
+<b>一句话定义</b>：在 iPhone 上实现一个可悬浮于任意 App 之上的实时 BTC 行情条，采用 iOS 画中画（Picture-in-Picture, PiP）技术，全程无需 Mac 本地环境，零硬件成本完成开发与自用部署。
+</div>
+
+<h2 id="overview">1. 项目概述</h2>
+
+<h3 id="overview-goal">1.1 目标（Goals）</h3>
+<ul>
+<li>在任意 App 之上显示实时 BTC 价格（悬浮窗 floating overlay）</li>
+<li>价格 1Hz 级别刷新，肉眼体验为实时</li>
+<li>国内网络直连可用（无需翻墙），并能自动切换到兜底源</li>
+<li>零硬件成本：不购买 Mac，不购买 Apple 开发者付费账号</li>
+</ul>
+
+<h3 id="overview-nongoal">1.2 非目标（Non-Goals）</h3>
+<ul>
+<li>不做 K 线图、盘口、下单等交易功能</li>
+<li>不做多币种（仅 BTC）</li>
+<li>不做 Android 版本</li>
+<li>第一版不做灵动岛 / 实时活动（Live Activity）</li>
+<li>不做 App Store 上架、不做多用户分发</li>
+</ul>
+
+<h3 id="overview-fact">1.3 必须接受的平台事实（Platform Constraints）</h3>
+<blockquote>
+<p><b>iOS 禁止第三方 App 在其他 App 之上绘制任意视图。</b>没有 Android 那种系统级悬浮窗权限（<code>SYSTEM_ALERT_WINDOW</code>）。</p>
+<p>唯一合法途径是<b>画中画</b>：系统托管的悬浮视频窗口，可置顶于桌面与任意 App 之上。</p>
+</blockquote>
+<p>因此本项目本质是：<b>把行情数据渲染成"视频帧"，用 PiP 播放</b>。</p>
+
+<h2 id="decisions">2. 核心技术决策</h2>
+
+<table>
+<thead>
+<tr><th>决策项</th><th>选择</th><th>理由</th><th>被否方案</th></tr>
+</thead>
+<tbody>
+<tr><td>悬浮实现方式</td><td>画中画 PiP</td><td>iOS 唯一合法的全局悬浮能力</td><td>小组件（不能悬浮、刷新受限）、灵动岛（区域太小）</td></tr>
+<tr><td>渲染载体</td><td><code>AVSampleBufferDisplayLayer</code></td><td>支持自定义帧源，可渲染任意内容</td><td><code>AVPlayerLayer</code>（只能播固定视频文件）</td></tr>
+<tr><td>开发语言</td><td>纯 Swift + SwiftUI</td><td>PiP 本身就是原生代码，语言层越薄越好</td><td>React Native（多一层桥接与构建复杂度，零收益）</td></tr>
+<tr><td>工程定义</td><td>XcodeGen（<code>project.yml</code>）</td><td>纯文本，可在 Windows 上安全编辑；<code>.xcodeproj</code> 是二进制式文件，Windows 上无法改</td><td>手改 <code>.pbxproj</code>、Tuist（更重）</td></tr>
+<tr><td>构建方式</td><td>GitHub Actions macOS runner</td><td>无需本地 Mac，构建可复现</td><td>本地 Mac（成本）、Expo EAS（仍受签名限制）</td></tr>
+<tr><td>签名安装</td><td>Sideloadly + 免费 Apple ID</td><td>零成本，PiP 不需要付费权限</td><td>付费账号 ¥688/年、TestFlight（需付费）</td></tr>
+</tbody>
+</table>
+
+<h3 id="decisions-pip-why">2.1 为什么 PiP 优于其他方案</h3>
+<table>
+<thead><tr><th>方案</th><th>可悬浮</th><th>锁屏可见</th><th>实时刷新</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td>画中画 PiP</td><td class="ok">✅ 任意位置</td><td class="no">❌</td><td class="ok">✅ 秒级</td><td><b>采用</b></td></tr>
+<tr><td>灵动岛 Live Activity</td><td class="warn">⚠️ 仅顶部区域</td><td class="ok">✅</td><td class="warn">⚠️ 远程推送才可后台刷新</td><td>第二版评估</td></tr>
+<tr><td>桌面小组件 Widget</td><td class="no">❌</td><td class="no">❌</td><td class="no">❌ 刷新预算受限</td><td>排除</td></tr>
+</tbody>
+</table>
+
+<h2 id="delivery">3. 交付形态：无 Mac 开发链路</h2>
+
+<pre><code>Windows 编写代码（VS Code，全文本仓库）
+        ↓ git push
+GitHub Actions（macOS runner）
+    1. xcodegen generate          生成 .xcodeproj
+    2. xcodebuild build           CODE_SIGNING_ALLOWED=NO
+    3. 打包 Payload/ → .ipa
+        ↓ 下载 artifact（GitHub 网页直接下载）
+Windows 运行 Sideloadly
+    免费 Apple ID 签名 → USB 安装到 iPhone
+        ↓
+iPhone 上运行（证书 7 天有效）
+        ↓ 每 7 天
+重新侧载 / AltStore 自动续签（auto-refresh）</code></pre>
+
+<div class="card">
+<b>关键前提</b>：免费 Apple ID 的<b>个人团队（Personal Team）</b>侧载证书 7 天过期，需要每周重新签名安装。PiP 不需要任何付费权限（entitlement），因此免费账号可用。
+</div>
+
+<h2 id="datasource">4. 数据源架构</h2>
+
+<h3 id="datasource-probe">4.1 实测结论（2026-09-17，关闭 VPN 直连实测）</h3>
+
+<table>
+<thead>
+<tr><th>数据源</th><th>类型</th><th>直连</th><th>代理</th><th>实测延迟</th><th>判定</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>data-stream.binance.vision</code></td><td>WebSocket</td>
+<td class="ok">✅</td><td class="ok">✅</td>
+<td>握手 396ms<br>1.0 tick/s<br><b>最大间隔 1010ms</b><br>60 秒零断流</td>
+<td><b>L1 主源</b></td>
+</tr>
+<tr>
+<td><code>data-api.binance.vision</code></td><td>REST</td>
+<td class="ok">✅ 10/10</td><td>—</td>
+<td>平均 121ms<br>（最低 73ms）</td>
+<td><b>L2 同域兜底</b></td>
+</tr>
+<tr>
+<td><code>api.coinex.com</code></td><td>REST</td>
+<td class="ok">✅</td><td>—</td>
+<td>440ms</td>
+<td><b>L3 异构兜底</b></td>
+</tr>
+<tr>
+<td><code>ws.coinex.com</code></td><td>WebSocket</td><td class="no">❌ TLS 阻断</td><td>—</td><td>—</td><td>弃用</td>
+</tr>
+<tr>
+<td><code>ws.okx.com</code></td><td>WebSocket</td><td class="no">❌</td><td class="warn">不稳定</td><td>—</td><td>L4 代理模式备选</td>
+</tr>
+<tr>
+<td><code>www.okx.com</code></td><td>REST</td>
+<td class="no">❌ DNS 污染至 169.254.0.2</td>
+<td class="warn">时通时断</td><td>566ms（通时）</td>
+<td>L4 代理模式备选</td>
+</tr>
+<tr>
+<td><code>stream.binance.com</code> / <code>fstream</code> / <code>api.binance.com</code> / Gate / KuCoin / CoinCap / CoinGecko</td>
+<td>WS + REST</td>
+<td class="no">❌</td><td>—</td><td>—</td><td>不可用</td>
+</tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>核心发现</b>：Binance 的公共数据域（<code>*.binance.vision</code>，走 AWS CloudFront）在国内<b>直连可达且高度稳定</b>，无需任何代理即可获得 1Hz 实时 BTC 价格。这解决了"稳定兜底"的核心诉求。
+</div>
+
+<h3 id="datasource-layers">4.2 分层容错设计（Failover Layers）</h3>
+
+<table>
+<thead><tr><th>层级</th><th>数据源</th><th>传输方式</th><th>启用条件</th><th>刷新频率</th></tr></thead>
+<tbody>
+<tr><td>L1</td><td>Binance 公共数据域</td><td>WebSocket 推送</td><td>默认</td><td>1Hz（服务端推送）</td></tr>
+<tr><td>L2</td><td>Binance 公共数据域</td><td>REST 轮询</td><td>L1 握手失败</td><td>2s</td></tr>
+<tr><td>L3</td><td>CoinEx</td><td>REST 轮询</td><td>L2 连续失败 2 次<br>（异构厂商，抵御单域封禁）</td><td>2s</td></tr>
+<tr><td>L4</td><td>OKX</td><td>WS / REST</td><td>用户手动开启（代理环境）</td><td>1Hz</td></tr>
+<tr><td>L5</td><td>自建中继（VPS 反代）</td><td>WebSocket</td><td>可选，人工配置</td><td>1Hz</td></tr>
+</tbody>
+</table>
+
+<h3 id="datasource-health">4.3 健康检查与切换策略（Health Monitor）</h3>
+<table>
+<thead><tr><th>项</th><th>策略</th></tr></thead>
+<tbody>
+<tr><td>心跳超时</td><td>5 秒无 tick 判定异常</td></tr>
+<tr><td>降级触发</td><td>异常持续 10 秒 → 切换下一层</td></tr>
+<tr><td>重连退避</td><td>指数退避（exponential backoff）：1s → 2s → 4s → 8s → 16s → 30s 封顶</td></tr>
+<tr><td>恢复策略</td><td>切到某层成功后，每 5 分钟探测上一层，可用则回切（prefer-higher-tier）</td></tr>
+<tr><td>可观测性</td><td>App 内显示当前数据源、最近延迟、切换日志</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>选型注意</b>：L1 与 L2 同域，同域封禁时会同时失效，因此 L3 必须是<b>异构</b>（不同厂商、不同 CDN）的源才具兜底价值。</p>
+</blockquote>
+
+<h3 id="datasource-abstract">4.4 抽象设计（Pluggable）</h3>
+<pre><code>protocol MarketDataSource {
+    var name: String { get }
+    var tier: Int { get }                       // 优先级层级
+    func start()
+    func stop()
+    var onTick: ((TickerSnapshot) -> Void)? { get set }
+    var onStateChange: ((SourceState) -> Void)? { get set }
+}
+
+struct TickerSnapshot {
+    let symbol: String        // BTCUSDT
+    let last: Double          // 最新价
+    let changePercent: Double // 24h 涨跌幅
+    let updatedAt: Date
+}</code></pre>
+<p>所有源实现同一协议，<code>MarketStore</code> 只依赖协议，切换源不影响上层渲染。</p>
+
+<h2 id="pip">5. PiP 渲染管线</h2>
+
+<pre><code>MarketStore（行情状态聚合）
+      ↓ 价格变化通知
+FramePump（帧泵，自适应帧率）
+      · 价格变化 → 立即出帧
+      · 静止状态 → 1 fps 心跳保活（keep-alive）
+      ↓
+TickerFrameRenderer（CoreGraphics 绘制 → CVPixelBuffer）
+      · 币对名 · 最新价（等宽数字，避免宽度抖动）
+      · 涨跌幅标签（绿涨红跌）
+      ↓
+SampleBufferFactory（CVPixelBuffer → CMSampleBuffer）
+      ↓
+AVSampleBufferDisplayLayer
+      ↓
+AVPictureInPictureController → 系统悬浮窗</code></pre>
+
+<h3 id="pip-keypoints">5.1 关键实现点</h3>
+<table>
+<thead><tr><th>要点</th><th>做法</th><th>原因</th></tr></thead>
+<tbody>
+<tr><td>会话保活</td><td><code>AVAudioSession</code> 设为 <code>.playback</code> 并 <code>setActive(true)</code></td><td>PiP 会话在后台存活、持续刷新价格的前提</td></tr>
+<tr><td>内容源</td><td><code>ContentSource(sampleBufferDisplayLayer:playbackDelegate:)</code></td><td>iOS 15+ 的自定义帧源接口</td></tr>
+<tr><td>伪装直播流</td><td>时间轴返回 <code>.positiveInfinity</code></td><td>隐藏进度条，只保留播放/关闭控件</td></tr>
+<tr><td>画面比例</td><td>由 <code>CVPixelBuffer</code> 尺寸决定（如 640×200）</td><td>还原"长条"悬浮条观感</td></tr>
+<tr><td>回到 App</td><td>实现 <code>restoreUserInterfaceForPictureInPictureStop</code></td><td>用户点击"还原"时正确切回前台</td></tr>
+<tr><td>数字防抖</td><td>使用等宽数字（monospaced digits）</td><td>价格跳动时不产生布局抖动</td></tr>
+<tr><td>省电</td><td>价格未变化时降到 1 fps</td><td>帧泵是持续耗电点</td></tr>
+<tr><td>后台模式</td><td><code>Info.plist</code> 声明 <code>UIBackgroundModes: audio</code></td><td>PiP 会话后台存活</td></tr>
+</tbody>
+</table>
+
+<h3 id="pip-color">5.2 配色规范</h3>
+<ul>
+<li>涨：绿色 <span class="ok">#4ade80</span></li>
+<li>跌：红色 <span class="no">#f87171</span></li>
+<li>悬浮条底色：深色半透明（与系统 PiP 深色底一致）</li>
+</ul>
+
+<h2 id="architecture">6. 应用架构</h2>
+
+<pre><code>FloatingTicker/
+├─ project.yml                           XcodeGen 工程定义（Windows 上编辑此文件）
+├─ Sources/
+│  ├─ App/
+│  │   FloatingTickerApp.swift           @main 入口
+│  │   ContentView.swift                 主界面：启动 PiP、当前源、调试日志
+│  ├─ Market/                            行情层（可插拔）
+│  │   MarketDataSource.swift            协议定义
+│  │   BinanceVisionWebSocketSource.swift  L1 主源
+│  │   BinanceVisionRestSource.swift       L2 同域轮询
+│  │   CoinExRestSource.swift              L3 异构兜底
+│  │   OKXSource.swift                     L4 代理模式备选
+│  │   SourceHealthMonitor.swift           健康检查与切换调度
+│  │   MarketStore.swift                 状态聚合，对外暴露只读快照
+│  │   TickerSnapshot.swift              数据模型
+│  ├─ PiP/
+│  │   PiPController.swift               AVPictureInPictureController 封装
+│  │   FramePump.swift                   帧泵与自适应帧率
+│  │   TickerFrameRenderer.swift         CoreGraphics → CVPixelBuffer
+│  │   SampleBufferFactory.swift         CVPixelBuffer → CMSampleBuffer
+│  ├─ Settings/
+│  │   AppSettings.swift                 数据源偏好、配色、尺寸等
+│  └─ Debug/
+│      LogCollector.swift                环形日志缓冲
+│      DebugPanelView.swift              应用内日志面板
+├─ Resources/
+│  ├─ Info.plist                         UIBackgroundModes: audio
+│  └─ Assets.xcassets/                   应用图标
+├─ scripts/
+│  ├─ check-sources.ps1                  连通性探测（已落盘）
+│  ├─ check-ws.ps1                       代理/WS 探测（已落盘）
+│  ├─ check-final.ps1                    直连 vs 代理对比（已落盘）
+│  └─ check-stability.ps1                60s 压测（已落盘）
+└─ .github/workflows/ios-build.yml       CI：构建 → 打包 ipa</code></pre>
+
+<h3 id="architecture-layers">6.1 分层职责</h3>
+<table>
+<thead><tr><th>层</th><th>职责</th><th>不做什么</th></tr></thead>
+<tbody>
+<tr><td>Market</td><td>连接、解析、健康检查、切换</td><td>不做渲染与 UI</td></tr>
+<tr><td>PiP</td><td>帧生成与画中画控制</td><td>不关心数据来源</td></tr>
+<tr><td>App / Settings</td><td>交互、偏好、状态展示</td><td>不做协议解析</td></tr>
+<tr><td>Debug</td><td>日志收集与展示</td><td>不参与业务逻辑</td></tr>
+</tbody>
+</table>
+
+<h2 id="ci">7. CI 流水线</h2>
+
+<pre><code>name: ios-build
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build (unsigned)
+        run: |
+          xcodebuild build \
+            -project FloatingTicker.xcodeproj \
+            -scheme FloatingTicker \
+            -sdk iphoneos \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CONFIGURATION_BUILD_DIR=$PWD/build
+      - name: Package ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/FloatingTicker.app Payload/
+          zip -qr FloatingTicker-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FloatingTicker-ipa
+          path: FloatingTicker-unsigned.ipa</code></pre>
+
+<h3 id="ci-notes">7.1 流水线约束</h3>
+<table>
+<thead><tr><th>项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>免费额度</td><td>公开仓库 macOS runner 免费无限；私有仓库 2000 分钟/月，但 macOS 计费系数 10×，实际约 <b>200 分钟</b> macOS 构建时长</td></tr>
+<tr><td>单次构建耗时</td><td>预计 3–6 分钟（含依赖安装与编译）</td></tr>
+<tr><td>迭代成本</td><td>每次改动 → 构建 3–6 分钟 → 下载 → 侧载 1–2 分钟</td></tr>
+<tr><td>优化手段</td><td>缓存 <code>~/Library/Developer/Xcode/DerivedData</code>；合并多次小改动后一次构建</td></tr>
+</tbody>
+</table>
+
+<h2 id="sideload">8. 侧载与续签流程</h2>
+
+<h3 id="sideload-steps">8.1 首次安装</h3>
+<ol>
+<li>Windows 安装 Apple 官方 iTunes（提供 Apple 设备驱动，<b>不要用微软商店版</b>）</li>
+<li>下载 <code>FloatingTicker-unsigned.ipa</code>（CI artifact）</li>
+<li>Sideloadly 打开 ipa，输入免费 Apple ID，USB 连接 iPhone，开始签名安装</li>
+<li>iPhone 上：设置 → 通用 → VPN 与设备管理 → 信任该开发者证书</li>
+<li>设置 → 通用 → 关于本机 → 证书信任设置（如出现提示）</li>
+<li>运行 App，点击"开启悬浮窗"，然后切到桌面查看 PiP 窗口</li>
+</ol>
+
+<h3 id="sideload-limits">8.2 免费账号限制</h3>
+<table>
+<thead><tr><th>限制</th><th>影响</th><th>应对</th></tr></thead>
+<tbody>
+<tr><td>证书 7 天过期</td><td>到期后 App 无法启动</td><td>每周重新侧载；或使用 AltStore 自动续签</td></tr>
+<tr><td>同时最多 3 个侧载 App</td><td>需要删掉不用的</td><td>只保留本项目</td></tr>
+<tr><td>无推送权限（APNs）</td><td>无法后台刷新</td><td>本版不使用（PiP 不需要）</td></tr>
+<tr><td>无法上架 / 分发</td><td>仅自己可用</td><td>符合自用定位</td></tr>
+</tbody>
+</table>
+
+<h3 id="sideload-refresh">8.3 续签方案对比</h3>
+<table>
+<thead><tr><th>方案</th><th>自动化程度</th><th>要求</th><th>推荐度</th></tr></thead>
+<tbody>
+<tr><td>Sideloadly 手动重装</td><td>手动，约 1–2 分钟</td><td>USB 连接 + 打开工具</td><td>先用它跑通</td></tr>
+<tr><td>AltStore（Windows AltServer）</td><td>半自动，同 Wi-Fi 后台续签</td><td>AltServer 常驻 PC + 手机上 AltStore 后台刷新开启</td><td>稳定后采用</td></tr>
+</tbody>
+</table>
+
+<h2 id="debug">9. 调试策略（无 Xcode 环境）</h2>
+
+<table>
+<thead><tr><th>手段</th><th>用途</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>idevicesyslog</code></td><td>通过 USB 实时查看设备日志</td><td>libimobiledevice 工具，Windows 可用，Sideloadly 自带</td></tr>
+<tr><td>应用内调试面板</td><td>查看连接状态、切换记录、错误信息</td><td>自研 <code>DebugPanelView</code>，环形日志缓冲</td></tr>
+<tr><td>iPhone 崩溃日志</td><td>排查闪退</td><td>设置 → 隐私与安全性 → 分析与改进 → 分析数据</td></tr>
+<tr><td>CI 构建日志</td><td>编译错误定位</td><td>GitHub Actions 日志</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>核心约束</b>：无断点调试器（debugger）。所有排错依赖<b>日志推断</b>，因此日志质量直接决定开发效率——日志必须是结构化的，并覆盖关键状态转换点。</p>
+</blockquote>
+
+<h2 id="milestones">10. 里程碑（Milestones）</h2>
+
+<table>
+<thead><tr><th>阶段</th><th>内容</th><th>验收标准</th><th>风险等级</th></tr></thead>
+<tbody>
+<tr><td><b>M0</b></td><td>仓库 + CI + 侧载链路打通</td><td>iPhone 上跑起一个 Hello World App（CI 构建 → 侧载 → 启动）</td><td class="no">高（闸门）</td></tr>
+<tr><td><b>M1</b></td><td>PiP 骨架（静态画面）</td><td>悬浮窗出现在桌面，可拖动、可关闭、可还原</td><td class="no">高（闸门）</td></tr>
+<tr><td><b>M2</b></td><td>行情接入</td><td>App 内实时显示 BTC 价格，含断线重连</td><td class="warn">中</td></tr>
+<tr><td><b>M3</b></td><td>行情画进 PiP</td><td>悬浮窗实时跳价，1Hz 刷新无卡顿</td><td class="warn">中</td></tr>
+<tr><td><b>M4</b></td><td>容错与打磨</td><td>多源自动切换生效；省电策略；配色与尺寸定稿</td><td>低</td></tr>
+<tr><td><b>M5</b></td><td>长期可用</td><td>续签流程文档化 / AltStore 自动续签跑通</td><td>低</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>M0 与 M1 是风险闸门（risk gate）</b>：先只做这两步，验证通过后再投入后续开发。若侧载链路或 PiP 在免费账号下不可用，整体方案需要重新评估。
+</div>
+
+<h2 id="risks">11. 风险登记册</h2>
+
+<table>
+<thead><tr><th>#</th><th>风险</th><th>概率</th><th>影响</th><th>缓解措施</th></tr></thead>
+<tbody>
+<tr><td>R1</td><td>免费账号侧载装不上（驱动/签名失败）</td><td>中</td><td class="no">致命</td><td>M0 第一天先验证；备选 AltStore 或换用付费账号</td></tr>
+<tr><td>R2</td><td>免费账号下 PiP 不可用</td><td>低</td><td class="no">致命</td><td>M1 早验证；PiP 不需付费权限，理论可用</td></tr>
+<tr><td>R3</td><td><code>*.binance.vision</code> 域名后续被封锁</td><td>中</td><td class="warn">高</td><td>L3 异构兜底 + 健康检查自动切换；必要时启用 L5 自建中继</td></tr>
+<tr><td>R4</td><td>CI 构建失败（Xcode 版本 / SDK 不匹配）</td><td>中</td><td class="warn">中</td><td>固定 runner 镜像与 Xcode 版本；保留本地语法检查</td></tr>
+<tr><td>R5</td><td>7 天重签麻烦导致弃用</td><td>高</td><td>低</td><td>M5 接入 AltStore 自动续签</td></tr>
+<tr><td>R6</td><td>无断点调试导致排错慢</td><td>高</td><td class="warn">中</td><td>结构化日志 + 应用内调试面板 + idevicesyslog</td></tr>
+<tr><td>R7</td><td>PiP 会话被系统回收</td><td>中</td><td class="warn">中</td><td>音频会话保活；监听 PiP 生命周期并在中断时提示用户重启</td></tr>
+<tr><td>R8</td><td>私有仓库 macOS 构建额度耗尽</td><td>中</td><td>低</td><td>公开仓库；或合并提交减少构建次数</td></tr>
+</tbody>
+</table>
+
+<h2 id="todo">12. 待确认事项</h2>
+
+<table>
+<thead><tr><th>#</th><th>事项</th><th>当前假设</th></tr></thead>
+<tbody>
+<tr><td>Q1</td><td>价格口径：现货 BTCUSDT 还是永续（SWAP）</td><td class="ok">已确认：现货 BTCUSDT（直连稳定、立即可用；接口抽象保留后续扩展）</td></tr>
+<tr><td>Q2</td><td>GitHub 仓库公开或私有</td><td class="ok">已确认：公开仓库（macOS runner 免费无限额，迭代次数不受限）</td></tr>
+<tr><td>Q3</td><td>悬浮条显示内容</td><td class="ok">已确认：币对名 + 最新价 + 24h 涨跌幅（不含 K 线）</td></tr>
+<tr><td>Q4</td><td>是否需要自建中继（VPS）</td><td>暂不需要，作为 L5 预留</td></tr>
+</tbody>
+</table>
+
+<h2 id="appendix">附录 A：探测脚本</h2>
+<p>项目 <code>scripts/</code> 目录下四个 PowerShell 探测脚本，用于后续数据源复检（行情源可达性会随时间变化）：</p>
+<table>
+<thead><tr><th>脚本</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>check-sources.ps1</code></td><td>各交易所 TCP 可达性与 REST 可获取性总览</td></tr>
+<tr><td><code>check-ws.ps1</code></td><td>系统代理配置识别 + 本地代理端口扫描 + WS 握手</td></tr>
+<tr><td><code>check-final.ps1</code></td><td>直连与代理两种模式对比（用于判断是否需要代理）</td></tr>
+<tr><td><code>check-stability.ps1</code></td><td>60 秒持续接收压测 + REST 延迟统计（判断稳定性）</td></tr>
+</tbody>
+</table>
+
+</article>
+</main>
+
+<aside class="toc" id="toc">
+<div class="toc-title">目录</div>
+<a href="#overview">1. 项目概述</a>
+<a class="sub" href="#overview-goal">1.1 目标</a>
+<a class="sub" href="#overview-nongoal">1.2 非目标</a>
+<a class="sub" href="#overview-fact">1.3 平台事实</a>
+<a href="#decisions">2. 核心技术决策</a>
+<a class="sub" href="#decisions-pip-why">2.1 为什么 PiP</a>
+<a href="#delivery">3. 无 Mac 开发链路</a>
+<a href="#datasource">4. 数据源架构</a>
+<a class="sub" href="#datasource-probe">4.1 实测结论</a>
+<a class="sub" href="#datasource-layers">4.2 分层容错设计</a>
+<a class="sub" href="#datasource-health">4.3 健康检查策略</a>
+<a class="sub" href="#datasource-abstract">4.4 抽象设计</a>
+<a href="#pip">5. PiP 渲染管线</a>
+<a class="sub" href="#pip-keypoints">5.1 关键实现点</a>
+<a class="sub" href="#pip-color">5.2 配色规范</a>
+<a href="#architecture">6. 应用架构</a>
+<a class="sub" href="#architecture-layers">6.1 分层职责</a>
+<a href="#ci">7. CI 流水线</a>
+<a class="sub" href="#ci-notes">7.1 流水线约束</a>
+<a href="#sideload">8. 侧载与续签</a>
+<a class="sub" href="#sideload-steps">8.1 首次安装</a>
+<a class="sub" href="#sideload-limits">8.2 免费账号限制</a>
+<a class="sub" href="#sideload-refresh">8.3 续签对比</a>
+<a href="#debug">9. 调试策略</a>
+<a href="#milestones">10. 里程碑</a>
+<a href="#risks">11. 风险登记册</a>
+<a href="#todo">12. 待确认事项</a>
+<a href="#appendix">附录 A 探测脚本</a>
+</aside>
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    return document.getElementById(id);
+  });
+  function highlight() {
+    var best = 0;
+    var offset = 120;
+    for (var i = 0; i < targets.length; i++) {
+      var el = targets[i];
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= offset) best = i;
+    }
+    links.forEach(function (a, i) {
+      if (i === best) a.classList.add('active');
+      else a.classList.remove('active');
+    });
+  }
+  window.addEventListener('scroll', highlight, { passive: true });
+  window.addEventListener('resize', highlight);
+  highlight();
+})();
+</script>
+
+</body>
+</html>

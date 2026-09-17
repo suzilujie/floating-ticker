@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>悬浮行情 App（BTC · iOS）概念文档</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f172a; --bg-2:#1e293b; --bg-3:#334155;
+  --line:#334155; --border:#475569;
+  --fg:#e2e8f0; --fg-dim:#94a3b8; --fg-weak:#64748b; --fg-strong:#f1f5f9;
+  --blue:#60a5fa; --green:#4ade80; --orange:#fb923c; --red:#f87171; --purple:#c4b5fd; --cyan:#67e8f9;
+  --code-bg:#0b1220;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-size:16px; line-height:1.75;
+  font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+main{max-width:1440px;margin:0 auto;padding:48px 300px 140px 40px}
+article{max-width:1100px}
+h1{font-size:29px;color:var(--fg-strong);border-bottom:2px solid var(--border);padding-bottom:16px;margin:0 0 8px}
+h2{font-size:22px;color:var(--fg-strong);border-left:4px solid var(--blue);border-bottom:1px solid var(--line);padding:0 0 8px 12px;margin:52px 0 16px}
+h3{font-size:17px;color:var(--fg-strong);border-left:3px solid var(--border);padding-left:10px;margin:28px 0 10px}
+p{margin:10px 0}
+b,strong{color:var(--fg-strong)}
+code{background:var(--bg-2);border:1px solid var(--line);border-radius:3px;padding:1px 5px;font-family:Consolas,Monaco,monospace;font-size:14px;color:var(--cyan)}
+pre{background:var(--code-bg);border-left:3px solid var(--border);border-radius:3px;padding:14px 16px;overflow-x:auto;font-family:Consolas,Monaco,monospace;font-size:13.5px;line-height:1.6}
+pre code{background:none;border:none;padding:0;color:var(--fg)}
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14.5px}
+th{background:var(--bg-3);color:var(--fg-strong);text-align:left;padding:9px 12px;border:1px solid var(--border);font-weight:600}
+td{padding:9px 12px;border:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even){background:rgba(30,41,59,.45)}
+.card{background:var(--bg-2);border-left:3px solid var(--blue);padding:12px 16px;margin:18px 0;border-radius:3px}
+blockquote{background:var(--bg-2);border-left:3px solid var(--orange);margin:18px 0;padding:12px 16px;border-radius:3px}
+blockquote p{margin:6px 0}
+ul{padding-left:26px;margin:10px 0}
+li{margin:5px 0}
+.meta{color:var(--fg-weak);font-size:14px;margin-bottom:6px}
+.tag{display:inline-block;border:1px solid var(--border);color:var(--fg-dim);border-radius:3px;padding:0 7px;font-size:12.5px;margin-right:6px}
+.st-ok{color:var(--green)}
+.st-wait{color:var(--orange)}
+.st-drop{color:var(--red)}
+.toc{position:fixed;top:96px;right:32px;width:262px;max-height:calc(100vh - 150px);overflow-y:auto;border-left:1px solid var(--line);padding-left:16px;font-size:13.5px}
+.toc-title{color:var(--fg-strong);font-weight:600;font-size:13px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px}
+.toc a{display:block;color:var(--fg-dim);text-decoration:none;padding:3px 0 3px 8px;border-left:2px solid transparent;margin-left:-2px;line-height:1.5}
+.toc a:hover{color:var(--fg)}
+.toc a.active{color:var(--blue);border-left-color:var(--blue)}
+@media print{
+  :root{
+    color-scheme: light;
+    --bg:#ffffff; --bg-2:#f4f6f8; --bg-3:#e6e9ee; --line:#c8ced8; --border:#9aa4b2;
+    --fg:#14181f; --fg-dim:#454d59; --fg-weak:#6b7280; --fg-strong:#000000;
+    --blue:#1d4ed8; --green:#15803d; --orange:#b45309; --red:#b91c1c; --purple:#6d28d9; --cyan:#0e7490;
+    --code-bg:#f4f6f8;
+  }
+  body{background:#fff;color:#14181f}
+  main{padding:0;max-width:none}
+  article{max-width:none}
+  .toc{display:none}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<main>
+<article>
+
+<h1>悬浮行情 App（BTC · iOS）概念文档</h1>
+<p class="meta">持续追加型文档 ｜ 最后更新 2026-09-17 ｜ 记录讨论中产生的概念、术语、决策与背景</p>
+
+<div class="card">
+本文档记录<b>概念与术语</b>（轻量、持续追加）。完整方案、架构、接口与实现细节见 <code>docs/设计文档.html</code>。
+</div>
+
+<h2 id="c-platform">一、平台能力类概念</h2>
+
+<h3 id="c-pip">画中画悬浮窗 (Picture-in-Picture Overlay)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>借助 iOS 系统级画中画（PiP）能力形成的悬浮窗口，可置顶于桌面与任意 App 之上，由系统托管窗口生命周期与控件。</td></tr>
+<tr><th>产生背景</th><td>iOS 禁止第三方 App 在其他 App 之上绘制任意视图（无 Android 的 <code>SYSTEM_ALERT_WINDOW</code> 权限），PiP 是唯一合法的全局悬浮途径。</td></tr>
+<tr><th>关键特征</th><td>系统强制显示关闭与还原控件；窗口尺寸受系统控制（约三档）；必须跟随"视频播放"语义。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>作为本项目的核心实现基础</td></tr>
+<tr><th>关联概念</th><td>帧源层（AVSampleBufferDisplayLayer）、帧泵（Frame Pump）、灵动岛（Live Activity）</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-framesource">帧源层 (Sample Buffer Display Layer)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td><code>AVSampleBufferDisplayLayer</code>：可直接投放 <code>CMSampleBuffer</code> 视频帧的渲染层，不依赖视频文件或播放器。</td></tr>
+<tr><th>产生背景</th><td>PiP 只接受两类内容源：<code>AVPlayerLayer</code>（只能播固定媒体）与 <code>AVSampleBufferDisplayLayer</code>（可自定义帧）。要把行情"画"成视频，必须用后者。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>帧泵、像素缓冲（CVPixelBuffer）、画中画悬浮窗</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-framepump">帧泵 (Frame Pump)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>驱动 <code>CVPixelBuffer</code> 持续产出并投喂给渲染层的调度机制，本项目采用<b>自适应帧率</b>：价格变化时立即出帧，静止时降到 1 fps 心跳保活（keep-alive）。</td></tr>
+<tr><th>产生背景</th><td>PiP 要求持续有帧输入才能维持画面；但同时，持续高频出帧是主要耗电点。行情数据是稀疏事件（1Hz），无需恒定 60fps。</td></tr>
+<tr><th>备选</th><td><code>CADisplayLink</code> 固定 30/60fps（耗电）、定时器驱动（时序精度略差）</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>帧源层、等宽数字防抖</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-liveactivity">灵动岛 / 实时活动 (Dynamic Island / Live Activity)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>基于 <code>ActivityKit</code> 的锁屏与灵动岛常驻展示能力，iOS 16.1+，能显示实时状态。</td></tr>
+<tr><th>产生背景</th><td>最初评估的候选方案之一（B 方案）。</td></tr>
+<tr><th>局限</th><td>仅显示在顶部胶囊区，无法任意位置悬浮；后台刷新<b>必须依赖服务端 APNs 远程推送</b>，而推送能力需付费开发者账号。</td></tr>
+<tr><th>状态</th><td><span class="tag st-wait">暂缓</span>第一版不做，作为可选补充</td></tr>
+<tr><th>关联概念</th><td>画中画悬浮窗、免费个人团队、APNs</td></tr>
+</tbody>
+</table>
+
+<h2 id="c-network">二、网络与数据源类概念</h2>
+
+<h3 id="c-earlyexit">SNI 阻断 (SNI-based Blocking)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>在 TLS 握手的明文阶段（Server Name Indication，SNI）识别目标域名并中断连接。表现为 <b>TCP 层可连通、TLS 层超时</b>。</td></tr>
+<tr><th>产生背景</th><td>探测中发现 Gate、Bitget、CoinEx WS 等均"端口通但请求超时"，属典型 SNI 阻断特征。</td></tr>
+<tr><th>意义</th><td>解释"为什么能 ping 通却拉不到数据"，避免误判为对方服务故障。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已识别</span>作为数据源评估的关键判据</td></tr>
+<tr><th>关联概念</th><td>DNS 污染、公共数据域、系统代理透传</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-dnspollution">DNS 污染 (DNS Poisoning)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>域名解析被返回无效或伪造地址。本项目实测中 <code>www.okx.com</code> 被解析为 <code>169.254.0.2</code>（链路本地保留地址，不可路由）。</td></tr>
+<tr><th>产生背景</th><td>首轮探测中多次出现返回 Meta / Dropbox 等无关 IP 的现象。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已识别</span></td></tr>
+<tr><th>关联概念</th><td>SNI 阻断</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-publicdomain">公共数据域 (Public Market Data Domain)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>交易所提供的、无需 API Key 的公开行情数据专属域名。本项目指 Binance 的 <code>*.binance.vision</code>（走 AWS CloudFront）。</td></tr>
+<tr><th>产生背景</th><td>主站域名（<code>api.binance.com</code> / <code>stream.binance.com</code>）在国内直连被阻断，但公共数据域<b>直连可达</b>。</td></tr>
+<tr><th>实测</th><td>WS 60 秒压测：61 tick、平均间隔 989ms、<b>最大间隔 1010ms</b>（零断流）；REST 10/10 成功、平均 121ms。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>作为 L1 主源与 L2 兜底</td></tr>
+<tr><th>关联概念</th><td>分层容错、异构兜底、SNI 阻断</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-failover">分层容错 / 多源热备 (Tiered Failover)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>按优先级排列多个数据源，前一层不可用时自动降级到下一层，上层恢复后回切（prefer-higher-tier）。</td></tr>
+<tr><th>产生背景</th><td>用户明确要求"需要稳定兜底"；单一源在国内网络环境下不可靠。</td></tr>
+<tr><th>层级</th><td>L1 WS 主源 → L2 同域 REST 轮询 → L3 异构 REST → L4 代理模式备选 → L5 自建中继</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>健康检查器、指数退避、异构兜底</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-heterogeneous">异构兜底 (Heterogeneous Fallback)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>兜底源必须来自不同厂商、不同 CDN 与不同域名族，避免"同域同时失效"。</td></tr>
+<tr><th>产生背景</th><td>L1 与 L2 同属 <code>binance.vision</code>，该域被封时会一起失效。</td></tr>
+<tr><th>结论</th><td>L3 选用 CoinEx（实测直连 440ms 可用），与 Binance 无共同基础设施依赖。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>分层容错</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-healthmonitor">健康检查器 (Source Health Monitor)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>监控数据流活性的组件：5 秒无 tick 判定异常，异常持续 10 秒触发降级；重连采用指数退避；每 5 分钟探测上层源以决定是否回切。</td></tr>
+<tr><th>产生背景</th><td>网络抖动是常态（实测中同一 OKX 接口一次成功一次超时），需要自动而非人工干预。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已设计</span></td></tr>
+<tr><th>关联概念</th><td>分层容错、指数退避</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-backoff">指数退避 (Exponential Backoff)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>重连间隔随时间倍增：1s → 2s → 4s → 8s → 16s → 30s（封顶）。</td></tr>
+<tr><th>产生背景</th><td>频繁重连会加剧网络负担并耗电，固定短间隔在断网场景下毫无意义。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>健康检查器</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-sysproxy">系统代理透传 (System Proxy Inheritance)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>iOS 上 <code>URLSession</code> / <code>URLSessionWebSocketTask</code> 默认遵循 Wi-Fi 配置中的代理设置（Proxy）与代理类 App（Shadowrocket / Clash / Quantumult X）建立的隧道。</td></tr>
+<tr><th>产生背景</th><td>需判断 App 是否要内置代理配置功能。</td></tr>
+<tr><th>结论</th><td>无需内置代理设置，用户挂上代理工具后自动生效；但探测发现部分技术栈（如 .NET <code>ClientWebSocket</code>）<b>不自动读取系统代理</b>，做网络诊断时须显式指定代理，否则会误判为"直连可用/不可用"。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已确认</span>并已修正探测方法</td></tr>
+<tr><th>关联概念</th><td>SNI 阻断、DNS 污染</td></tr>
+</tbody>
+</table>
+
+<h2 id="c-delivery">三、构建与分发类概念</h2>
+
+<h3 id="c-sideload">侧载 (Sideloading)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>不经过 App Store，用个人开发者证书把自编译的 App 直接签名安装到自己的设备上。</td></tr>
+<tr><th>产生背景</th><td>用户无付费开发者账号，无法使用 TestFlight 或 Ad-Hoc 分发。</td></tr>
+<tr><th>工具</th><td>Sideloadly（Windows，USB 安装）、AltStore（半自动续签）</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>免费个人团队、7 天重签、无 Mac 开发链路</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-personalteam">免费个人团队 (Free Personal Team)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>使用免费 Apple ID 在 Xcode 中生成的开发者团队（Personal Team），可进行真机调试与侧载签名。</td></tr>
+<tr><th>限制</th><td>证书 7 天过期；同时最多 3 个侧载 App；无推送（APNs）、无 App Groups、无法上架或分发。</td></tr>
+<tr><th>与本项目关系</th><td><b>PiP 不需要任何付费权限（entitlement）</b>，因此免费账号足以支撑本项目的核心能力。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>（待 M0 实机验证）</td></tr>
+<tr><th>关联概念</th><td>侧载、7 天重签、灵动岛</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-resign">7 天重签 (Weekly Re-signing)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>免费证书 7 天过期后，App 无法启动，需重新签名安装。</td></tr>
+<tr><th>产生背景</th><td>免费个人团队的平台限制。</td></tr>
+<tr><th>应对</th><td>手动重装（约 1–2 分钟）或 AltStore 自动续签（auto-refresh，要求 PC 与手机同 Wi-Fi 且 AltServer 常驻）。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已接受</span>作为零成本方案的代价</td></tr>
+<tr><th>关联概念</th><td>免费个人团队、侧载</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-xcodegen">文本化工程定义 (XcodeGen)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>用 <code>project.yml</code>（纯文本）声明 Xcode 工程，构建时由工具生成 <code>.xcodeproj</code>。</td></tr>
+<tr><th>产生背景</th><td><code>.xcodeproj</code> 是二进制式工程文件，在 Windows 上无法安全编辑；而本项目全程在 Windows 上开发。</td></tr>
+<tr><th>收益</th><td>工程配置可版本化、可代码评审、无二进制冲突。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>无 Mac 开发链路</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-nomacpipeline">无 Mac 开发链路 (Mac-less Build Pipeline)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>Windows 写码 → GitHub Actions（macOS runner）构建并打包未签名 ipa → Windows 侧载到 iPhone 的完整闭环。</td></tr>
+<tr><th>产生背景</th><td>用户无 Mac、无付费账号，要求零硬件成本。</td></tr>
+<tr><th>代价</th><td>无断点调试器，仅能靠日志排错；单次迭代 3–6 分钟；私有仓库 macOS 构建额度约 200 分钟/月。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>（M0 为风险闸门）</td></tr>
+<tr><th>关联概念</th><td>侧载、XcodeGen、风险闸门</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-riskgate">风险闸门 (Risk Gate)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>在投入大量开发前，先验证高风险假设的里程碑节点；未通过则需重新评估整体方案。</td></tr>
+<tr><th>产生背景</th><td>零成本路径的两个致命假设：①免费账号能侧载 ②免费账号下 PiP 可用。</td></tr>
+<tr><th>本项目闸门</th><td>M0（侧载链路打通）与 M1（PiP 悬浮成功）</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已定义</span></td></tr>
+<tr><th>关联概念</th><td>无 Mac 开发链路</td></tr>
+</tbody>
+</table>
+
+<h2 id="c-ui">四、渲染与交互类概念</h2>
+
+<h3 id="c-monospaced">等宽数字防抖 (Monospaced Digit Layout Stability)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>价格数字使用等宽字体（monospaced digits），使每次刷新时字符宽度一致，避免整行布局抖动。</td></tr>
+<tr><th>产生背景</th><td>比例字体下 "1" 与 "8" 宽度不同，价格跳动时数字会左右滑动，观感很差。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>帧泵、帧渲染器</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-livefake">伪直播流 (Fake Live Stream)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>让 PiP 时间轴返回 <code>.positiveInfinity</code>（无限时长），使系统把内容判定为直播流，从而隐藏进度条与跳转控件。</td></tr>
+<tr><th>产生背景</th><td>行情条不是"可拖动的视频"，但 PiP 默认按视频语义提供播放控制。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已设计</span></td></tr>
+<tr><th>关联概念</th><td>画中画悬浮窗、帧源层</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-keepalive">会话保活 (Session Keep-alive)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>通过 <code>AVAudioSession</code> 设为 <code>.playback</code> 并激活，维持 PiP 会话在后台存活，从而持续刷新价格。</td></tr>
+<tr><th>产生背景</th><td>若不保活，App 进入后台后 PiP 会话会被回收，价格停止更新。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已设计</span></td></tr>
+<tr><th>关联概念</th><td>帧泵、画中画悬浮窗</td></tr>
+</tbody>
+</table>
+
+</article>
+</main>
+
+<aside class="toc" id="toc">
+<div class="toc-title">目录</div>
+<a href="#c-platform">一、平台能力</a>
+<a href="#c-pip">画中画悬浮窗</a>
+<a href="#c-framesource">帧源层</a>
+<a href="#c-framepump">帧泵</a>
+<a href="#c-liveactivity">灵动岛 / 实时活动</a>
+<a href="#c-network">二、网络与数据源</a>
+<a href="#c-earlyexit">SNI 阻断</a>
+<a href="#c-dnspollution">DNS 污染</a>
+<a href="#c-publicdomain">公共数据域</a>
+<a href="#c-failover">分层容错</a>
+<a href="#c-heterogeneous">异构兜底</a>
+<a href="#c-healthmonitor">健康检查器</a>
+<a href="#c-backoff">指数退避</a>
+<a href="#c-sysproxy">系统代理透传</a>
+<a href="#c-delivery">三、构建与分发</a>
+<a href="#c-sideload">侧载</a>
+<a href="#c-personalteam">免费个人团队</a>
+<a href="#c-resign">7 天重签</a>
+<a href="#c-xcodegen">文本化工程定义</a>
+<a href="#c-nomacpipeline">无 Mac 开发链路</a>
+<a href="#c-riskgate">风险闸门</a>
+<a href="#c-ui">四、渲染与交互</a>
+<a href="#c-monospaced">等宽数字防抖</a>
+<a href="#c-livefake">伪直播流</a>
+<a href="#c-keepalive">会话保活</a>
+</aside>
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });
+  function highlight() {
+    var best = 0;
+    for (var i = 0; i < targets.length; i++) {
+      var el = targets[i];
+      if (el && el.getBoundingClientRect().top <= 120) best = i;
+    }
+    links.forEach(function (a, i) { a.classList.toggle('active', i === best); });
+  }
+  window.addEventListener('scroll', highlight, { passive: true });
+  window.addEventListener('resize', highlight);
+  highlight();
+})();
+</script>
+</body>
+</html>

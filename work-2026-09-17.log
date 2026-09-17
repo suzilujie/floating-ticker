@@ -1,0 +1,147 @@
+================================================================================
+工作日志 work-2026-09-17.log
+项目：悬浮行情 App（BTC · iOS）｜ 代号 FloatingTicker
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-09-17] 阶段一：方案选型与可行性论证
+--------------------------------------------------------------------------------
+
+■ 讨论内容（无文件产出）
+  1. 明确 iOS 平台约束：系统禁止第三方 App 在其他 App 之上绘制任意视图，无
+     Android 式 SYSTEM_ALERT_WINDOW 权限。目标效果（AiCoin 式悬浮行情条）唯一
+     合法实现途径为画中画（PiP, Picture-in-Picture）。
+  2. 评估候选方案：
+     - 方案 A 画中画 PiP（AVPictureInPictureController + 自定义帧源）
+     - 方案 B 灵动岛 / 实时活动（ActivityKit）
+     - 方案 C 桌面小组件（WidgetKit）
+     结论：C 排除（不能悬浮、刷新受限）；A 为主方案；B 因后台刷新必须依赖
+     服务端 APNs 推送、而推送权限需付费开发者账号，第一版暂缓。
+  3. 评估 React Native 可行性：可行性成立但无收益——PiP 与 Live Activity 均
+     为原生能力，RN 需额外维护原生模块与桥接层，构建复杂度上升。决策改用
+     纯 Swift + SwiftUI。
+  4. 开发环境约束：用户无 Mac、无付费 Apple 开发者账号。经讨论确认采用
+     "零成本 CI + Windows 侧载"路径（GitHub Actions macOS runner 构建未签名
+     ipa → Windows 上用 Sideloadly + 免费 Apple ID 签名安装）。
+  5. 用户确认项：
+     - 交付形态：iPhone 自用，不做上架与分发
+     - 第一版范围：仅 PiP 悬浮窗，不做 Live Activity
+     - 显示内容：仅 BTC（币对 + 最新价 + 涨跌幅）
+     - 配色：绿涨红跌
+     - 数据源：OKX 需翻墙且不稳定，必须有稳定兜底
+
+--------------------------------------------------------------------------------
+[2026-09-17] 阶段二：数据源实测（核心成果）
+--------------------------------------------------------------------------------
+
+■ 新增文件
+  scripts/check-sources.ps1      各交易所 TCP 可达性 + REST 可获取性总览
+  scripts/check-ws.ps1           系统代理识别 + 本地代理端口扫描 + WS 握手
+  scripts/check-final.ps1        直连与代理双模式对比（REST + WebSocket）
+  scripts/check-stability.ps1    60 秒持续接收压测 + REST 延迟统计
+
+■ 探测方法与踩坑修正
+  首轮探测发现探测结果自相矛盾：同一 OKX REST 接口一次 566ms 成功、一次 5 秒
+  超时。定位到两个原因：
+    1) 本机 WinINET 系统代理开启（127.0.0.1:7897，Clash 类工具默认混合端口），
+       而 .NET 的 ClientWebSocket 不读取系统代理设置，导致 WS 测试实际走直连，
+       结论被污染。
+    2) 用户关闭 VPN 后重测，结果与首轮完全反转，证明首轮代理链路不稳定。
+  修正：check-final.ps1 改为显式指定代理或显式禁用代理（HttpClientHandler
+  UseProxy），分模式测试。
+
+■ 实测结论（关闭 VPN 直连环境）
+  【L1 主源】wss://data-stream.binance.vision/ws/btcusdt@ticker
+    - TCP 直连可建立，WS 握手 396ms
+    - 60 秒压测：收到 61 个 tick（1.0 tick/s），平均间隔 989ms，
+      最大间隔 1010ms → 零断流、零抖动
+    - 经代理同样可用（886ms）
+  【L2 同域兜底】https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT
+    - 10/10 成功，平均 121ms（最低 73ms，最高 444ms 含首次 TLS 握手）
+  【L3 异构兜底】https://api.coinex.com/v2/spot/ticker?market=BTCUSDT
+    - 直连可用，440ms，返回真实数据（last 76393）
+    - 但其 WS（wss://ws.coinex.com/v1/）被 TLS 层阻断，弃用
+  【不可用】
+    - ws.okx.com / www.okx.com：直连不可达；www.okx.com 被 DNS 污染至
+      169.254.0.2（链路本地保留地址）；经代理时一次成功一次超时，不稳定
+    - stream.binance.com / fstream.binance.com / api1~4.binance.com /
+      api.gateio.ws / api.kucoin.com / api.coincap.io / api.coingecko.com：
+      直连全部超时；Gate、Bitget 呈现"TCP 通但 TLS 超时"的典型 SNI 阻断特征
+
+■ 关键结论
+  Binance 公共数据域（*.binance.vision，走 AWS CloudFront）在国内直连可达且
+  高度稳定，无需翻墙即可获得 1Hz 实时 BTC 价格。这解决了用户"稳定兜底"的
+  核心诉求，并反转了"必须依赖 OKX + 代理"的初始假设。
+  同时确认：L1 与 L2 同域，同域封禁时会一起失效，因此 L3 必须是异构厂商源。
+
+--------------------------------------------------------------------------------
+[2026-09-17] 阶段三：方案文档化
+--------------------------------------------------------------------------------
+
+■ 新增文件
+  docs/设计文档.html     完整方案（12 章）：项目概述 / 核心决策 / 无 Mac 开发链路 /
+                         数据源架构（含实测数据）/ PiP 渲染管线 / 应用架构 /
+                         CI 流水线 / 侧载与续签 / 调试策略 / 里程碑 / 风险登记册 /
+                         待确认事项 + 附录（探测脚本索引）
+  docs/concepts.html     概念文档：平台能力 / 网络与数据源 / 构建与分发 / 渲染与交互
+                         四类共 18 个概念（含定义、产生背景、状态、关联概念）
+
+■ 文档规范
+  两份 HTML 均为 slate 灰阶暗色风格（:root 单冒号定义变量），右侧固定 TOC +
+  锚点跳转 + 滚动高亮，@media print 反色为白底黑字并隐藏 TOC。
+
+■ 影响范围
+  仅新增文档与探测脚本，无既有代码被修改。项目此前为空目录。
+
+■ 潜在风险与遗留问题
+  R1 免费 Apple ID 侧载链路能否跑通（M0 风险闸门，未验证）
+  R2 免费账号下 PiP 是否可用（M1 风险闸门，未验证；理论不需付费权限）
+  R3 *.binance.vision 域名后续若被封锁，需启用 L3 异构兜底或 L5 自建中继
+  R4 无断点调试器，排错依赖日志，需保证日志质量
+  R5 免费证书 7 天过期，需每周重签（后续评估 AltStore 自动续签）
+  Q1 价格口径待定：现货 BTCUSDT（当前唯一直连稳定源）还是永续 SWAP
+  Q2 GitHub 仓库公开（CI 免费无限）或私有（macOS 构建额度约 200 分钟/月）
+
+--------------------------------------------------------------------------------
+[2026-09-17] 阶段四：M0 仓库骨架与 CI 落地（已完成）
+--------------------------------------------------------------------------------
+
+■ 新增文件
+  project.yml                              XcodeGen 工程定义（工程唯一真实来源）
+  Support/Info.plist                       Bundle 配置，声明 UIBackgroundModes: audio
+  Sources/App/FloatingTickerApp.swift      @main 入口
+  Sources/App/ContentView.swift            M0 验证界面
+  Sources/Debug/ProvisioningProfile.swift  读取证书到期时间
+  .github/workflows/ios-build.yml          CI：构建未签名 ipa 并上传 artifact
+  .gitignore                               忽略 .xcodeproj / build / ipa 等产物
+
+■ 设计要点
+  1) 工程定义文本化：project.yml 为唯一真实来源，.xcodeproj 由 CI 生成且不纳入
+     版本控制，规避 Windows 上无法编辑二进制工程文件的问题。
+  2) 显式声明 scheme：XcodeGen 不会自动生成共享 scheme，若不声明则 CI 中
+     xcodebuild -scheme 会报找不到 scheme。
+  3) CI 构建未签名包：CODE_SIGNING_ALLOWED=NO，签名动作留到 Windows 侧载时
+     由 Sideloadly 用免费 Apple ID 完成；产物打包为 Payload/ 结构的 ipa。
+  4) M0 界面即验证工具：直接显示画中画支持情况（M1 前提）与证书剩余天数
+     （对应风险 R5 的 7 天重签），避免"某天突然打不开"的困惑。
+
+■ 影响范围
+  新增文件，无既有代码改动。工程尚不可本地构建（本机无 macOS/Xcode），
+  首次编译验证依赖 GitHub Actions。
+
+■ 潜在风险
+  R1' CI 首次构建可能因 XcodeGen 语法或 Xcode 版本差异失败，需按日志迭代
+  R2' Bundle ID com.xfish.floatingticker 若与已注册 ID 冲突，需调整
+  R6' 无断点调试：M0 阶段若启动崩溃，只能依赖 idevicesyslog 与应用内日志
+
+--------------------------------------------------------------------------------
+[2026-09-17] 下一步计划
+--------------------------------------------------------------------------------
+  立即：创建 GitHub 公开仓库并推送，触发 CI 首次构建，确认能产出 ipa
+        （已确认：公开仓库 —— macOS runner 免费无限额；价格口径取现货 BTCUSDT）
+  M0 收尾：Windows 安装 Apple 官方 iTunes（提供设备驱动）与 Sideloadly，
+           完成首次侧载，在 iPhone 上启动 App
+  M1：实现 PiP 骨架（静态画面进画中画），验证免费账号下 PiP 可用性
+  通过后进入 M2（行情接入）→ M3（行情画进 PiP）→ M4（容错打磨）→ M5（续签）
+
+================================================================================

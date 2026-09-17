@@ -1,0 +1,59 @@
+name: ios-build
+
+# 无 Mac 开发链路：在 GitHub 托管的 macOS runner 上构建未签名 ipa，
+# 下载后由 Windows 侧的 Sideloadly 用免费 Apple ID 签名安装。
+# 参见 docs/设计文档.html 第 3、7 章。
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build unsigned ipa
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for device (unsigned)
+        run: |
+          xcodebuild build \
+            -project FloatingTicker.xcodeproj \
+            -scheme FloatingTicker \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CONFIGURATION_BUILD_DIR="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/FloatingTicker.app Payload/
+          zip -qr FloatingTicker-unsigned.ipa Payload
+          ls -lh FloatingTicker-unsigned.ipa
+
+      - name: Upload ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatingTicker-unsigned-ipa
+          path: FloatingTicker-unsigned.ipa
+          retention-days: 30
