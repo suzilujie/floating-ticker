@@ -1,0 +1,80 @@
+================================================================================
+工作日志 work-2026-09-18.log
+项目：悬浮行情 App（BTC · iOS）｜ 代号 FloatingTicker
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段一：侧载链路打通（M0 收官）
+--------------------------------------------------------------------------------
+
+■ 阻塞解除过程
+  昨日阻塞：Apple USB 驱动文件缺失（usbaapl64.sys / usbaapl64.inf 均不存在），
+  且 iPhone 完全未被 Windows 枚举（无 VID_05AC 设备），故 iOS 不弹"信任此电脑"。
+  今日用户更换数据线并（推测）补齐驱动后，Sideloadly 成功识别设备：
+  iPhone，系统 26.2.1，UDID 00008150-001889201E8A401C，连接方式 USB。
+
+■ 侧载结果（成功）
+  1) 下载 CI 产物 FloatingTicker-unsigned.ipa（run 35175885613）
+  2) Sideloadly 用免费 Apple ID 签名并安装成功
+  3) 安装后 iOS 弹出「Developer Mode Required」——这是开发签名 App 的正常要求，
+     需到 设置 → 隐私与安全性 → 开发者模式 开启并重启
+  4) 结论：ipa 完整性正常（20KB 疑点解除），免费账号侧载链路可行
+
+■ 安全提示（已向用户强调）
+  用户在对话中误发 Apple ID 手机号与密码，已提醒立即改密，并建议注册专用
+  Apple ID（不绑支付）用于侧载，避免主号凭据风险。
+
+■ 未推送改动（待与本日改动一并提交）
+  昨日遗留 4 个文件未推送：ios-build.yml（产物自检）、.gitignore、设计文档、
+  工作日志。
+
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段二：M1 画中画骨架实现
+--------------------------------------------------------------------------------
+
+■ 新增文件
+  Sources/PiP/SampleBufferFactory.swift  像素缓冲 → CMSampleBuffer 封装
+  Sources/PiP/TickerFrameRenderer.swift  帧渲染：占位价格 + 每秒跳动的时钟
+  Sources/PiP/FramePump.swift            帧泵：1 秒间隔定时出帧
+  Sources/PiP/PiPController.swift        画中画控制器：串联帧泵、渲染、悬浮窗
+
+■ 修改文件
+  Sources/App/ContentView.swift          新增「画中画测试（M1）」区块，
+                                        含开启/关闭悬浮窗按钮与说明文案
+
+■ 架构与数据流
+  FramePump（1s 定时）
+    → TickerFrameRenderer.render() 产出 CVPixelBuffer(BGRA 640x200)
+    → SampleBufferFactory 封装为 CMSampleBuffer（时间戳单调递增）
+    → AVSampleBufferDisplayLayer.enqueue()
+    → AVPictureInPictureController 悬浮显示
+
+■ 关键技术点
+  1) 音频会话：AVAudioSession 设为 .playback 并 setActive(true)，
+     保证 PiP 会话后台存活、持续刷新
+  2) 内容源：AVPictureInPictureController.ContentSource(sampleBufferDisplayLayer:playbackDelegate:)
+  3) 伪直播流：pictureInPictureControllerTimeRangeForPlayback 返回
+     start:.negativeInfinity, duration:.positiveInfinity，隐藏进度条
+  4) 层级挂载：显示层挂到 keyWindow 的 1x1 容器视图，满足 PiP 对层级的要求
+  5) 帧翻转：CGContext translateBy + scaleBy(-1) 翻转为 UIKit 坐标，
+     避免文字上下颠倒
+  6) 验证设计：右上角时钟每秒跳动 = 帧持续流动的直接肉眼证据
+
+■ 验证目标（M1 闸门）
+  侧载新构建后，App 内点击「开启悬浮窗」→ 切回桌面 →
+  应出现悬浮小窗，且右上角时钟每秒跳动。
+  若悬浮窗不出现 / 黑屏 / 崩溃，则免费账号下 PiP 不可用（风险 R2），需重新评估。
+
+■ 潜在风险
+  R12 首次编译可能报错（本机无 Xcode，PiP 相关 API 签名未经编译器验证），
+      依赖 CI 日志定位
+  R13 悬浮窗画面若上下颠倒（帧翻转方向错误），属 M1 外观问题，不影响链路验证
+  R14 CMClockGetHostTimeClock 在 iOS 18+ 可能告警（deprecated），不影响运行
+
+■ 下一步
+  1) 提交并推送全部改动（含昨日遗留的 4 个文件）
+  2) CI 构建（含产物自检）→ 下载新 ipa
+  3) Sideloadly 覆盖安装（同 bundle id，同 Apple ID，Developer Mode 已开）
+  4) 打开 App → 点「开启悬浮窗」→ 观察悬浮窗与时钟跳动
+
+================================================================================

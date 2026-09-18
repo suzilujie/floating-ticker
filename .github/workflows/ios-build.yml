@@ -48,8 +48,66 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/FloatingTicker.app Payload/
+          echo "=== .app 内文件明细 ==="
+          find Payload -type f -exec ls -l {} \;
           zip -qr FloatingTicker-unsigned.ipa Payload
           ls -lh FloatingTicker-unsigned.ipa
+
+      # 产物自检：CI 报成功不等于 ipa 可安装。
+      # 解包 ipa 校验内容完整性，任一硬指标不满足即构建失败（fail-fast），
+      # 避免"能编译但不能安装"的坏产物流到侧载环节。
+      - name: Verify ipa contents
+        run: |
+          set -e
+          rm -rf verify && mkdir verify
+          unzip -q FloatingTicker-unsigned.ipa -d verify
+
+          echo "=== ipa 解包清单 ==="
+          find verify -type f -exec ls -l {} \;
+
+          APP_BIN="verify/Payload/FloatingTicker.app/FloatingTicker"
+          if [ ! -f "$APP_BIN" ]; then
+            echo "::error::ipa 中缺少可执行文件: $APP_BIN"
+            exit 1
+          fi
+
+          # 关键判据用 file 的类型判定，而不是体积阈值：
+          # 极小的 App 二进制可能只有几十 KB，体积阈值容易误报。
+          FILE_INFO=$(file "$APP_BIN")
+          echo "file = $FILE_INFO"
+          echo "executable size = $(stat -f%z "$APP_BIN") bytes"
+          case "$FILE_INFO" in
+            *Mach-O*arm64*) ;;
+            *)
+              echo "::error::可执行文件不是 arm64 Mach-O 产物，构建产物异常"
+              exit 1
+              ;;
+          esac
+
+          PLIST="verify/Payload/FloatingTicker.app/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            echo "::error::ipa 中缺少 Info.plist"
+            exit 1
+          fi
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST")
+          echo "CFBundleIdentifier = $BUNDLE_ID"
+          case "$BUNDLE_ID" in
+            *'$('*)
+              echo "::error::CFBundleIdentifier 未被展开，仍含构建变量: $BUNDLE_ID"
+              exit 1
+              ;;
+          esac
+
+          # 画中画后台保活的硬前提：UIBackgroundModes[0] 必须是 audio
+          BG=$(/usr/libexec/PlistBuddy -c "Print :UIBackgroundModes:0" "$PLIST" 2>/dev/null || true)
+          echo "UIBackgroundModes[0] = $BG"
+          if [ "$BG" != "audio" ]; then
+            echo "::error::UIBackgroundModes[0] 应为 audio（PiP 后台保活前提），实际为 '$BG'"
+            exit 1
+          fi
+
+          echo "verify passed"
 
       - name: Upload ipa artifact
         uses: actions/upload-artifact@v4

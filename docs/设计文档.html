@@ -206,7 +206,7 @@ li{margin:6px 0}
 <article>
 
 <h1>悬浮行情 App（BTC · iOS）设计文档</h1>
-<p class="meta">项目代号 FloatingTicker ｜ 版本 v1.0 ｜ 日期 2026-09-17 ｜ 目标平台 iOS 17+ ｜ 形态：画中画悬浮行情条</p>
+<p class="meta">项目代号 FloatingTicker ｜ 版本 v1.2 ｜ 日期 2026-09-17 ｜ 主力机 iPhone 17 Pro Max ／ 测试机 iPhone 17（均 iOS 26），最低支持 iOS 17 ｜ 形态：画中画悬浮行情条</p>
 
 <div class="card">
 <b>一句话定义</b>：在 iPhone 上实现一个可悬浮于任意 App 之上的实时 BTC 行情条，采用 iOS 画中画（Picture-in-Picture, PiP）技术，全程无需 Mac 本地环境，零硬件成本完成开发与自用部署。
@@ -216,11 +216,17 @@ li{margin:6px 0}
 
 <h3 id="overview-goal">1.1 目标（Goals）</h3>
 <ul>
+<li><b>目标设备</b>：主力机 iPhone 17 Pro Max（最终长期使用），测试机 iPhone 17（承担全部试验性验证）。两台均运行 iOS 26；工程部署目标设为 iOS 17.0，保留向下兼容能力</li>
 <li>在任意 App 之上显示实时 BTC 价格（悬浮窗 floating overlay）</li>
 <li>价格 1Hz 级别刷新，肉眼体验为实时</li>
 <li>国内网络直连可用（无需翻墙），并能自动切换到兜底源</li>
 <li>零硬件成本：不购买 Mac，不购买 Apple 开发者付费账号</li>
 </ul>
+<p>两台设备同代、同系统版本（iOS 26）、同架构（arm64），因此在测试机上验证通过的结论可直接迁移到主力机，不存在机型差异风险；两台均具备灵动岛，第二版若引入实时活动（Live Activity）也无需区分机型。</p>
+
+<div class="card">
+<b>设备角色分工（重要）</b>：所有高风险验证（侧载链路打通、PiP 可用性探测、反复失败的构建试验）<b>一律先在测试机 iPhone 17 上做</b>；主力机 iPhone 17 Pro Max <b>只在验证通过后安装稳定版本</b>。理由有二：① 免费账号的设备注册名额有限且消耗后不易回收，主力机的名额只用于装确定可用的版本；② 试验阶段的签名失败、证书反复更换、App 崩溃等现象不干扰主力机的日常使用。
+</div>
 
 <h3 id="overview-nongoal">1.2 非目标（Non-Goals）</h3>
 <ul>
@@ -412,6 +418,7 @@ AVPictureInPictureController → 系统悬浮窗</code></pre>
 <tr><td>数字防抖</td><td>使用等宽数字（monospaced digits）</td><td>价格跳动时不产生布局抖动</td></tr>
 <tr><td>省电</td><td>价格未变化时降到 1 fps</td><td>帧泵是持续耗电点</td></tr>
 <tr><td>后台模式</td><td><code>Info.plist</code> 声明 <code>UIBackgroundModes: audio</code></td><td>PiP 会话后台存活</td></tr>
+<tr><td>播放控制</td><td>sample buffer 模式下系统会禁用快进/快退控制</td><td>与"伪直播流"设计方向一致，无需额外处理；目标系统 iOS 26 下该组合仍为 Apple 官方支持的内容源</td></tr>
 </tbody>
 </table>
 
@@ -503,6 +510,15 @@ jobs:
           mkdir -p Payload
           cp -R build/FloatingTicker.app Payload/
           zip -qr FloatingTicker-unsigned.ipa Payload
+      # 产物自检：CI 报成功不等于 ipa 可安装，校验不通过则构建失败
+      - name: Verify ipa contents
+        run: |
+          rm -rf verify && mkdir verify
+          unzip -q FloatingTicker-unsigned.ipa -d verify
+          APP_BIN=verify/Payload/FloatingTicker.app/FloatingTicker
+          test -f "$APP_BIN"
+          # 用类型判定而非体积阈值：极小的 App 二进制只有几十 KB，阈值易误报
+          case "$(file "$APP_BIN")" in *Mach-O*arm64*) ;; *) exit 1 ;; esac
       - uses: actions/upload-artifact@v4
         with:
           name: FloatingTicker-ipa
@@ -522,6 +538,7 @@ jobs:
 <h2 id="sideload">8. 侧载与续签流程</h2>
 
 <h3 id="sideload-steps">8.1 首次安装</h3>
+<p><b>安装顺序：先测试机，后主力机。</b>以下步骤先在测试机 iPhone 17 上完整走一遍，确认 App 能启动、PiP 正常，再对主力机 iPhone 17 Pro Max 重复一次。</p>
 <ol>
 <li>Windows 安装 Apple 官方 iTunes（提供 Apple 设备驱动，<b>不要用微软商店版</b>）</li>
 <li>下载 <code>FloatingTicker-unsigned.ipa</code>（CI artifact）</li>
@@ -538,6 +555,7 @@ jobs:
 <tr><td>证书 7 天过期</td><td>到期后 App 无法启动</td><td>每周重新侧载；或使用 AltStore 自动续签</td></tr>
 <tr><td>同时最多 3 个侧载 App</td><td>需要删掉不用的</td><td>只保留本项目</td></tr>
 <tr><td>无推送权限（APNs）</td><td>无法后台刷新</td><td>本版不使用（PiP 不需要）</td></tr>
+<tr><td>设备注册数量上限</td><td>免费账号可绑定的设备数有限（业内普遍引用为 3 台，需实测确认）</td><td>两台 iPhone 通常够用；Sideloadly 注册设备时会给出明确提示</td></tr>
 <tr><td>无法上架 / 分发</td><td>仅自己可用</td><td>符合自用定位</td></tr>
 </tbody>
 </table>
@@ -572,8 +590,8 @@ jobs:
 <table>
 <thead><tr><th>阶段</th><th>内容</th><th>验收标准</th><th>风险等级</th></tr></thead>
 <tbody>
-<tr><td><b>M0</b></td><td>仓库 + CI + 侧载链路打通</td><td>iPhone 上跑起一个 Hello World App（CI 构建 → 侧载 → 启动）</td><td class="no">高（闸门）</td></tr>
-<tr><td><b>M1</b></td><td>PiP 骨架（静态画面）</td><td>悬浮窗出现在桌面，可拖动、可关闭、可还原</td><td class="no">高（闸门）</td></tr>
+<tr><td><b>M0</b></td><td>仓库 + CI + 侧载链路打通</td><td>在<b>测试机 iPhone 17</b> 上跑起 Hello World App（CI 构建 → 侧载 → 启动）；通过后再装到主力机</td><td class="no">高（闸门）</td></tr>
+<tr><td><b>M1</b></td><td>PiP 骨架（静态画面）</td><td>在测试机上悬浮窗出现在桌面，可拖动、可关闭、可还原</td><td class="no">高（闸门）</td></tr>
 <tr><td><b>M2</b></td><td>行情接入</td><td>App 内实时显示 BTC 价格，含断线重连</td><td class="warn">中</td></tr>
 <tr><td><b>M3</b></td><td>行情画进 PiP</td><td>悬浮窗实时跳价，1Hz 刷新无卡顿</td><td class="warn">中</td></tr>
 <tr><td><b>M4</b></td><td>容错与打磨</td><td>多源自动切换生效；省电策略；配色与尺寸定稿</td><td>低</td></tr>
@@ -597,7 +615,10 @@ jobs:
 <tr><td>R5</td><td>7 天重签麻烦导致弃用</td><td>高</td><td>低</td><td>M5 接入 AltStore 自动续签</td></tr>
 <tr><td>R6</td><td>无断点调试导致排错慢</td><td>高</td><td class="warn">中</td><td>结构化日志 + 应用内调试面板 + idevicesyslog</td></tr>
 <tr><td>R7</td><td>PiP 会话被系统回收</td><td>中</td><td class="warn">中</td><td>音频会话保活；监听 PiP 生命周期并在中断时提示用户重启</td></tr>
-<tr><td>R8</td><td>私有仓库 macOS 构建额度耗尽</td><td>中</td><td>低</td><td>公开仓库；或合并提交减少构建次数</td></tr>
+<tr><td>R8</td><td>CI 构建额度不足</td><td class="ok">已解决</td><td>低</td><td>已采用公开仓库，macOS runner 免费无限额</td></tr>
+<tr><td>R9</td><td>7 天重签的持续工作量</td><td>高</td><td>低</td><td>只有主力机需要长期有效：先在测试机上跑通 M5（AltStore 自动续签）再应用到主力机；测试机证书过期可直接重建</td></tr>
+<tr><td>R10</td><td>免费账号设备注册名额被试验消耗</td><td>中</td><td class="warn">中</td><td>先用测试机完成全部链路验证，主力机名额只在稳定版本就绪后使用一次；若遇上限提示再评估付费账号</td></tr>
+<tr><td>R11</td><td>目标系统为 iOS 26，PiP 行为若与旧版存在差异</td><td>低</td><td class="warn">中</td><td>已核实该内容源组合仍为官方支持；M1 阶段在真机（iOS 26）优先验证</td></tr>
 </tbody>
 </table>
 

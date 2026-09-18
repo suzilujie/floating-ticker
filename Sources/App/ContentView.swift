@@ -21,6 +21,9 @@ struct ContentView: View {
 
     private let processStart = Date()
 
+    /// 画中画是否已启动（M1）
+    @State private var pipRunning = false
+
     var body: some View {
         NavigationStack {
             List {
@@ -42,6 +45,29 @@ struct ContentView: View {
                          : "系统不支持画中画：本方案需重新评估。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("画中画测试（M1）") {
+                    if pipSupported {
+                        Button(pipRunning ? "关闭悬浮窗" : "开启悬浮窗") {
+                            if pipRunning {
+                                PiPController.shared.stop()
+                                pipRunning = false
+                            } else {
+                                PiPController.shared.start()
+                                pipRunning = true
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Text("点击「开启悬浮窗」后切回桌面，应出现一个悬浮小窗。窗口右上角时钟每秒跳动，即代表「帧泵 → 渲染 → 画中画」全链路打通。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("本机不支持画中画，M1 无法进行，需重新评估方案。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("证书状态") {

@@ -10,5 +10,8 @@ Payload/
 .DS_Store
 Thumbs.db
 
+# CI 产物下载与检查目录（ipa 解包验证用）
+_artifacts/
+
 # 编辑器
 .vscode/settings.json
