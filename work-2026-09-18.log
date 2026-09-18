@@ -166,4 +166,45 @@
       按 CI 报错修正即可（预计无此问题）。
   R17 若时间基并非根因，日志将直接揭示真正卡点，本轮是一次"确定性诊断"。
 
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段六：日志确诊黑屏根因并修复
+--------------------------------------------------------------------------------
+
+■ 前情
+  构建 3082478 因 CMTimebaseCreateWithSourceClock 编译失败（R15 命中）。
+  为尽快拿到带日志的可用构建，移除 controlTimebase（提交 25951d4），
+  构建通过（53.9 KB），侧载后取得应用内日志。
+
+■ 日志证据（14:46:21 ~ 14:46:33 一次完整会话）
+  [attach]  container view added to window                      —— 层级挂载成功
+  [start]   layer created / framePump + startPictureInPicture   —— 流程完整
+  [enqueue] #1 ok pts=8732.71 / #2 8733.71 / #3 8734.71 ...
+            已投喂 10 帧（1 秒 1 帧，节拍正确）
+  [status]  AVQueuedSampleBufferRenderingStatus(rawValue: 1)    —— 1 = .rendering，图层正常
+  [pip]     didStart；renderSize 307x96 → 640x200                —— PiP 已启动，尺寸正确
+  [缺失项]  无任何 "render: ... 创建失败" / "makeSampleBuffer FAILED"
+            —— 证明帧渲染与封装均成功
+
+■ 结论
+  帧生成、投喂、图层状态、PiP 会话全部正常，但画面纯黑。
+  PTS 使用主机时钟（8732 秒量级，即开机以来约 2.4 小时），
+  若图层默认时间基并非取自主机时钟，则所有帧都被判定为「尚未到期」，
+  排队等待而永不显示 —— 与 .rendering 状态 + 纯黑画面完全吻合。
+  同时可排除：渲染器问题、封装问题、层级挂载问题、帧泵问题。
+
+■ 修复（提交 4f0b6d2 之后的本轮改动）
+  不再猜测图层使用哪个时钟，改为：
+  1) start() 时读取图层默认时间基并显式 CMTimebaseSetRate(rate: 1.0) 确保其在运行
+  2) 每帧 PTS 直接取 CMTimebaseGetTime(图层时间基)，
+     使帧相对于图层时间基「立即到期」
+  选用 CMTimebaseSetRate / CMTimebaseGetTime —— CoreMedia 最稳定的老接口，
+  编译风险远低于上次失败的 CMTimebaseCreateWithSourceClock。
+
+■ 影响范围
+  仅 PiPController.swift 的时间戳来源与启动时的时间基速率设置。
+
+■ 待验证
+  若仍有问题，日志中新增的 "timebase rate=1.0 t=..." 一行将显示时间基实际时间，
+  可与 PTS 对比，进一步判断时钟是否一致。
+
 ================================================================================

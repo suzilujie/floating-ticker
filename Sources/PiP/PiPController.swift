@@ -57,6 +57,14 @@ final class PiPController: NSObject {
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
 
+        // 确保图层时间基处于运行状态，并记录其当前时间（供后续 PTS 使用）
+        if let timebase = layer.controlTimebase {
+            CMTimebaseSetRate(timebase, rate: 1.0)
+            LogCollector.shared.append("start: timebase rate=1.0 t=\(CMTimebaseGetTime(timebase).seconds)")
+        } else {
+            LogCollector.shared.append("start: 图层无默认时间基")
+        }
+
         frameCount = 0
 
         let controller = AVPictureInPictureController(
@@ -93,7 +101,13 @@ final class PiPController: NSObject {
         }
         frameCount += 1
 
-        let pts = CMClockGetTime(CMClockGetHostTimeClock())
+        // PTS 取图层自身时间基的当前时间：保证帧「立即到期」，而非落在图层时钟的未来
+        let pts: CMTime
+        if let timebase = layer.controlTimebase {
+            pts = CMTimebaseGetTime(timebase)
+        } else {
+            pts = CMClockGetTime(CMClockGetHostTimeClock())
+        }
         guard let sampleBuffer = SampleBufferFactory.makeSampleBuffer(
             from: pixelBuffer,
             presentationTime: pts
