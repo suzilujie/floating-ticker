@@ -308,6 +308,36 @@ li{margin:5px 0}
 </tbody>
 </table>
 
+<h3 id="c-hysteresis">迟滞触发 (Hysteresis)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>为「阈值型事件」加上<b>回差</b>：不仅要「进入阈值区」才触发，还要求触发后必须<b>真正离开</b>（离开距离大于触发带宽）才允许下一次触发。</td></tr>
+<tr><th>产生背景</th><td>价格报警最初只考虑「进入 ±容差带即报警」。但 BTC 在阈值附近来回穿越时，这会导致每几秒报一次，功能等于不可用。</td></tr>
+<tr><th>现象特征</th><td>「阈值附近反复触发」——数值在阈值上下抖动时用户被连环轰炸。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>：ARMED → ALERTING → COOLDOWN，其中解除冷却需同时满足「冷却时间到」与「价格离开 ±容差×2」</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-runtimeaudio">代码合成音 (Runtime Audio Synthesis)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>不携带音频素材文件，而在运行时用代码生成 PCM 波形，再拼装标准容器（如 44 字节 WAV 头）交给播放器。</td></tr>
+<tr><th>产生背景</th><td>报警音要求「辨识度高」。本项目由 CI 构建，仓库不宜携带二进制素材，且音色需要与手机自带通知音区分开。</td></tr>
+<tr><th>关键细节</th><td>方波（<code>sin(...) &gt;= 0 ? 1 : -1</code>）谐波丰富、穿透力远强于正弦波；起落段加包络消除开关爆音。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>：2200Hz 三连方波，<code>AVAudioPlayer</code> 循环播放</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-blinkrate">闪烁频率安全阈值 (Photo-sensitivity Threshold)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>闪烁/闪动内容的频率落在 <b>3~30 Hz</b> 区间时，对光敏性癫痫人群存在诱发风险。</td></tr>
+<tr><th>产生背景</th><td>报警需要文字颜色闪烁。直觉上越快越醒目，但越快越危险 —— 这是一个容易被忽略的无障碍约束。</td></tr>
+<tr><th>本项目取值</th><td><b>2 Hz</b>（半周期 0.25 秒），刻意压在 3 Hz 以下；配合报警期间 8 fps 出帧，恰好每相位 2 帧，交替干净不抖动。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>为设计约束</td></tr>
+</tbody>
+</table>
+
 <h2 id="c-pitfall">五、实测踩坑与经验（Pitfalls &amp; Lessons）</h2>
 
 <div class="card">
