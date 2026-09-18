@@ -40,6 +40,17 @@ enum SampleBufferFactory {
         guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else {
             return nil
         }
+
+        // 关键：告诉显示层"这一帧立即显示"，不要等待时间基准到点。
+        // 直播式内容（PTS 与系统时钟基准不一定严格对齐）常因缺少该附件而
+        // 始终不显示，表现为纯黑画面。
+        CMSetAttachment(
+            sampleBuffer,
+            key: kCMSampleAttachmentKey_DisplayImmediately,
+            value: kCFBooleanTrue,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate
+        )
+
         return sampleBuffer
     }
 }

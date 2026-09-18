@@ -52,7 +52,7 @@ final class PiPController: NSObject {
         // 每次启动都创建新的显示层，并显式绑定主机时钟时间基
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.frame = containerView?.bounds ?? CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
@@ -189,26 +189,15 @@ final class PiPController: NSObject {
             return
         }
 
-        // 容器视图必须有真实尺寸且处于可见状态：
-        // 早期使用 1x1 视图导致显示层可能被判为无可渲染区域（画面纯黑）。
-        // 这里用与画面同比例的 320x100，放在窗口底部作为可见预览。
-        let previewSize = CGSize(
-            width: 320,
-            height: 320 * TickerFrameRenderer.frameSize.height / TickerFrameRenderer.frameSize.width
-        )
-        let view = UIView(frame: CGRect(
-            x: 8,
-            y: window.bounds.height - previewSize.height - 40,
-            width: previewSize.width,
-            height: previewSize.height
-        ))
+        // 实测经验：容器用 1x1 时 PiP 能成功启动，换成 320x100 可见容器后
+        // PiP 反而完全启动不了（系统无任何回调）。故恢复 1x1。
+        // 不显示的问题改由样本缓冲的 DisplayImmediately 附件解决。
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         window.addSubview(view)
         containerView = view
-        LogCollector.shared.append(
-            "attach: container \(Int(previewSize.width))x\(Int(previewSize.height)) visible=\(!view.isHidden) alpha=\(view.alpha)"
-        )
+        LogCollector.shared.append("attach: container 1x1 added to window")
     }
 }
 
