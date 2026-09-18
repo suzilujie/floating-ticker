@@ -98,13 +98,17 @@ final class PiPController: NSObject {
 
     /// 创建以主机时钟为源的时间基。
     ///
-    /// 显式声明为可选类型再赋值：无论 CMTimebaseCreateWithSourceClock 在 Swift 中
-    /// 被导入为非可选还是可选返回值，此写法都能通过编译。
+    /// 注意：CMTimebaseCreateWithSourceClock 在 Swift 中的签名为
+    /// (allocator:sourceClock:timebaseOut:)，即通过输出参数返回时间基，
+    /// 函数本身返回 OSStatus 状态码 —— 早期尝试漏传 timebaseOut 导致编译失败。
     private static func makeControlTimebase() -> CMTimebase? {
-        let timebase: CMTimebase? = CMTimebaseCreateWithMasterClock(
+        var timebase: CMTimebase?
+        let status = CMTimebaseCreateWithSourceClock(
             allocator: kCFAllocatorDefault,
-            masterClock: CMClockGetHostTimeClock()
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &timebase
         )
+        guard status == noErr else { return nil }
         return timebase
     }
 
