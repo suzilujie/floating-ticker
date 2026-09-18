@@ -27,6 +27,9 @@ struct ContentView: View {
     /// 行情订阅是否已启动（M2）
     @State private var marketRunning = false
 
+    /// 一键启动状态：连行情 + 开浮窗（M3）
+    @State private var launched = false
+
     /// 行情状态（M2）
     @ObservedObject private var market = TickerStore.shared
 
@@ -56,18 +59,24 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("行情（M2）") {
-                    Button(marketRunning ? "停止行情" : "开启行情") {
-                        if marketRunning {
-                            market.stop()
-                            marketRunning = false
+                Section("启动") {
+                    Button(launched ? "停止" : "启动") {
+                        if launched {
+                            stopAll()
+                            launched = false
                         } else {
-                            market.start()
-                            marketRunning = true
+                            startAll()
+                            launched = true
                         }
                     }
                     .buttonStyle(.borderedProminent)
 
+                    Text("一键完成：连接行情（Gate 永续）→ 等首帧到达 → 自动开启悬浮窗。随后按 Home 键回桌面即可看到浮窗。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("行情（M2）") {
                     InfoRow(title: "数据源", value: market.activeSourceName)
                     InfoRow(title: "连接状态", value: market.state.describe)
                     InfoRow(title: "最新价", value: latestPriceText)
@@ -146,6 +155,44 @@ struct ContentView: View {
 
     private func refreshLog() {
         logText = LogCollector.shared.all.reversed().joined(separator: "\n")
+    }
+
+    // MARK: - 一键启动 / 停止
+
+    /// 启动链：连行情 → 等首帧 → 开浮窗。
+    /// 按钮点击本身提供了用户手势，可规避"程序化启动画中画被系统拒绝"的风险。
+    private func startAll() {
+        LogCollector.shared.append("app: 启动链开始")
+        market.start()
+        marketRunning = true
+        waitForFirstTickThenStartPiP(attemptsLeft: 6)
+    }
+
+    /// 等首帧到达再开浮窗（最多约 3 秒），避免浮窗先显示空值
+    private func waitForFirstTickThenStartPiP(attemptsLeft: Int) {
+        if market.tickCount > 0 {
+            LogCollector.shared.append("app: 行情已就绪（tick=\(market.tickCount)），开启浮窗")
+            PiPController.shared.start()
+            pipRunning = true
+            return
+        }
+        guard attemptsLeft > 0 else {
+            LogCollector.shared.append("app: 等待行情超时，仍尝试开启浮窗")
+            PiPController.shared.start()
+            pipRunning = true
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            waitForFirstTickThenStartPiP(attemptsLeft: attemptsLeft - 1)
+        }
+    }
+
+    private func stopAll() {
+        LogCollector.shared.append("app: 停止链开始")
+        PiPController.shared.stop()
+        pipRunning = false
+        market.stop()
+        marketRunning = false
     }
 
     // MARK: - 计算属性

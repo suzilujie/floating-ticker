@@ -76,6 +76,9 @@ final class PiPController: NSObject {
             )
         )
         controller.delegate = self
+        // 兜底机制：应用退到后台时自动转入画中画。
+        // 若启动时的手动触发被系统拒绝，用户按 Home 键即可自动转入浮窗。
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
         pipController = controller
 
         framePump.start()
