@@ -1,6 +1,7 @@
 import AudioToolbox
 import Combine
 import Foundation
+import UIKit
 
 /// 价格报警引擎。
 ///
@@ -56,6 +57,8 @@ final class AlertEngine: ObservableObject {
     private let sound = AlertSoundPlayer()
     private var isStarted = false
     private var endTimer: Timer?
+    private var hapticTimer: Timer?
+    private var hapticTick = 0
     private var lastPrice: Double?
     private var cooldownEndsAt: Date?
     /// 本次报警是否来自「试听」——试听结束不进冷却，不污染实盘状态
@@ -147,7 +150,7 @@ final class AlertEngine: ObservableObject {
         phase = .alerting
         isAlerting = true
         sound.start()
-        vibrate()
+        startHaptics()
 
         let current = lastPrice.map { String(format: "%.1f", $0) } ?? "--"
         LogCollector.shared.append(
@@ -167,6 +170,7 @@ final class AlertEngine: ObservableObject {
     private func finish() {
         endTimer?.invalidate()
         endTimer = nil
+        stopHaptics()
         sound.stop()
         isAlerting = false
 
@@ -230,9 +234,40 @@ final class AlertEngine: ObservableObject {
     /// 试听时长（秒）：够听清即可，不必像实盘那样响 20 秒
     private static let testDuration: TimeInterval = 6
 
-    private func vibrate() {
-        // 注：后台/锁屏时 iOS 基本不允许 App 主动振动，此处仅在前台可靠生效。
-        // 因此「辨识度」主要靠声音与视觉闪烁，震动只作补充。
+    /// 与警报音「嘀」的间隔一致：0.10 秒发声 + 0.07 秒间隔
+    private static let hapticInterval: TimeInterval = 0.17
+
+    /// 启动震动，节奏与警报音对齐：一秒内连震三下、随后静默，循环往复。
+    ///
+    /// ⚠️ 平台限制（务必知悉）：**iOS 基本不允许后台 App 主动震动**。
+    /// - 前台（App 可见）：可靠生效 —— UIFeedbackGenerator 正常工作
+    /// - 后台 / 锁屏：`UIFeedbackGenerator` 是空操作，`AudioServicesPlaySystemSound`
+    ///   也常被系统忽略 —— 属"尽力而为"，不保证生效
+    ///
+    /// 若要求在后台**一定**震动，唯一可靠途径是发一条本地通知（系统通知会震动），
+    /// 代价是必然会弹横幅并带上系统提示音，iOS 不提供"只震不响"的通知。
+    private func startHaptics() {
+        stopHaptics()
+        hapticTick = 0
+
+        // 起手用最强的一下：系统级震动 + 警告触觉
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+
+        let timer = Timer(timeInterval: Self.hapticInterval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            // 每 6 拍一轮：前 3 拍震（对应「嘀-嘀-嘀」），后 3 拍静默
+            self.hapticTick = (self.hapticTick + 1) % 6
+            if self.hapticTick < 3 {
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hapticTimer = timer
+    }
+
+    private func stopHaptics() {
+        hapticTimer?.invalidate()
+        hapticTimer = nil
     }
 }

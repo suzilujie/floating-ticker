@@ -25,7 +25,7 @@ struct AlertConfig: Codable, Equatable {
     var duration: TimeInterval = 20
 
     /// 报警结束后的冷却时长（秒）——防止价格在阈值附近徘徊时反复轰炸
-    var cooldown: TimeInterval = 300
+    var cooldown: TimeInterval = 60
 
     /// 解除冷却所需的「离开距离」倍数：价格必须离开目标超过 容差×该倍数，
     /// 才重新武装。这是迟滞（hysteresis）设计，是防轰炸的关键。
@@ -47,11 +47,25 @@ extension AlertConfig {
 
     private static let storageKey = "alert.config.v1"
 
+    /// 旧版本的冷却默认值（5 分钟）。仅用于迁移判断，**不要再改动**：
+    /// 存档里若仍是这个值，说明它来自旧默认值、而非用户的自选值。
+    private static let legacyCooldown: TimeInterval = 300
+
     static func load() -> AlertConfig {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode(AlertConfig.self, from: data) else {
+              var decoded = try? JSONDecoder().decode(AlertConfig.self, from: data) else {
             return AlertConfig()
         }
+
+        // 迁移：把"仍是旧默认值"的冷却从 300 秒改为新的 60 秒。
+        // 必须显式迁移 —— 已装机的设备会继续沿用存档里的值，
+        // 只改代码里的默认值等于没改（UserDefaults 存档的典型坑）。
+        if decoded.cooldown == legacyCooldown {
+            decoded.cooldown = AlertConfig().cooldown
+            decoded.save()
+            LogCollector.shared.append("alert: 冷却默认值迁移为 \(Int(decoded.cooldown)) 秒")
+        }
+
         return decoded
     }
 

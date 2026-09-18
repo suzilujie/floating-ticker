@@ -8,6 +8,14 @@ struct AlertSettingsView: View {
 
     @ObservedObject private var alert = AlertEngine.shared
 
+    /// 冷却用「分钟」呈现（模型内仍以秒存储，避免改动已有存档格式）
+    private var cooldownMinutes: Binding<Double> {
+        Binding(
+            get: { alert.config.cooldown / 60 },
+            set: { alert.config.cooldown = max(1, $0) * 60 }
+        )
+    }
+
     var body: some View {
         Section("价格报警") {
             Toggle("启用报警", isOn: $alert.config.isEnabled)
@@ -43,7 +51,20 @@ struct AlertSettingsView: View {
             .pickerStyle(.segmented)
 
             InfoRow(title: "报警时长", value: "\(Int(alert.config.duration)) 秒")
-            InfoRow(title: "冷却", value: "\(Int(alert.config.cooldown / 60)) 分钟")
+
+            // 冷却同样用输入框：它是需要按行情波动节奏反复试的参数，
+            // 且模型里存的是秒、界面用分钟，故用派生 Binding 转换（不改存档格式）
+            HStack {
+                Text("冷却")
+                Spacer()
+                TextField("1", value: cooldownMinutes, format: .number)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(maxWidth: 110)
+                Text("分钟")
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 Text("状态")
