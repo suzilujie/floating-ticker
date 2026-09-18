@@ -53,10 +53,9 @@ final class PiPController: NSObject {
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
         layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
-        layer.controlTimebase = Self.makeControlTimebase()
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
-        LogCollector.shared.append("start: layer created + controlTimebase set")
+        LogCollector.shared.append("start: layer created")
 
         frameCount = 0
 
@@ -83,15 +82,6 @@ final class PiPController: NSObject {
         displayLayer = nil
         isActive = false
         LogCollector.shared.append("stop: done")
-    }
-
-    // MARK: - 时间基
-
-    private static func makeControlTimebase() -> CMTimebase {
-        CMTimebaseCreateWithSourceClock(
-            allocator: kCFAllocatorDefault,
-            sourceClock: CMClockGetHostTimeClock()
-        )
     }
 
     // MARK: - 帧投喂
@@ -121,7 +111,7 @@ final class PiPController: NSObject {
         layer.enqueue(sampleBuffer)
 
         if frameCount <= 3 {
-            LogCollector.shared.append("enqueue #\(frameCount): ok status=\(layer.status)")
+            LogCollector.shared.append("enqueue #\(frameCount): ok pts=\(pts.seconds) status=\(layer.status)")
         } else if frameCount == 10 {
             LogCollector.shared.append("enqueue: 已投喂 10 帧")
         }
