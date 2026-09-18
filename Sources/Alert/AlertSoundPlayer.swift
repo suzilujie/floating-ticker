@@ -28,13 +28,29 @@ final class AlertSoundPlayer {
 
     /// 开始循环播放报警音（幂等：重复调用不会叠加播放）
     func start() {
+        // 关键：**出声前必须先抢回音频会话**。
+        //
+        // 背景：我们平时完全不发声（浮窗是"无声视频"），所以当你切去刷抖音时，
+        // 系统会把音频会话让给抖音，我们的会话随即被"打断"（deactivate）。
+        // 此时若直接播放，声音会被静默吞掉 —— 报警形同虚设。
+        //
+        // 重新激活是**抢占式**的：会打断抖音的播放（视频暂停），使报警声清晰可闻。
+        // 对报警而言这正是期望行为；若希望"叠在抖音上响"，改用 mixWithOthers 即可。
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            LogCollector.shared.append("alert: 抢回音频会话失败 \(error.localizedDescription)")
+        }
+
         if player == nil {
             player = makePlayer()
         }
         guard let player = player else { return }
         guard !player.isPlaying else { return }
         player.currentTime = 0
-        player.play()
+        if !player.play() {
+            LogCollector.shared.append("alert: 报警音 play() 返回 false（可能仍无声）")
+        }
     }
 
     /// 停止报警音

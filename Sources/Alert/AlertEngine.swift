@@ -1,3 +1,4 @@
+import AVFoundation
 import AudioToolbox
 import Combine
 import Foundation
@@ -86,6 +87,39 @@ final class AlertEngine: ObservableObject {
             // 行情源可能在任意线程回调，状态机与音频播放统一归拢到主线程
             DispatchQueue.main.async {
                 self?.handle(price: snapshot.last)
+            }
+        }
+
+        observeAudioInterruptions()
+    }
+
+    /// 监听音频会话被抢占 / 恢复。
+    ///
+    /// 为什么必须监听：我们平时不发声，用户切去刷抖音/看视频时，音频会话会被
+    /// 对方抢走并打断我们。若不做处理，报警时可能"出声失败且毫无提示"。
+    /// 这里既写日志（便于真机诊断"刷抖音时报警能不能响"），
+    /// 也在**报警中被抢占后**主动抢回会话并重新出声（平时则不打扰对方 App）。
+    private func observeAudioInterruptions() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self = self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+
+            switch type {
+            case .began:
+                LogCollector.shared.append("audio: 会话被其他 App 抢占（如抖音开始播放）")
+            case .ended:
+                LogCollector.shared.append("audio: 会话可恢复")
+                // 仅在报警中才抢回，避免平时平白打断对方 App 的播放
+                guard self.isAlerting else { return }
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.sound.start()   // 幂等：重新出声
+            @unknown default:
+                break
             }
         }
     }
