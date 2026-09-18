@@ -28,9 +28,12 @@ final class PiPController: NSObject, ObservableObject {
 
     /// 常态帧间隔：1 fps 心跳保活
     private static let idleFrameInterval: TimeInterval = 1.0
-    /// 报警帧间隔：8 fps。闪烁为 2 Hz（每 0.25 秒切换一次），
-    /// 8 fps 恰好每相位 2 帧，交替干净不抖动。
-    private static let alertFrameInterval: TimeInterval = 0.125
+    /// 报警帧间隔：4 fps。闪烁为 2 Hz（每相位 0.25 秒），
+    /// 4 fps 恰好每相位 1 帧 —— 既是最省电的干净交替，也够用。
+    ///
+    /// 之所以在意耗电：报警现在**不会自动停止**，可能持续很久，
+    /// 8 fps 长时间跑会让画布（600×400，每帧约 1MB）持续分配与重绘。
+    private static let alertFrameInterval: TimeInterval = 0.25
 
     /// 已投喂的帧数（用于日志节流）
     private var frameCount = 0
@@ -282,6 +285,17 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
         setPlaying playing: Bool
     ) {
         LogCollector.shared.append("playback: setPlaying \(playing)")
+
+        // 浮窗上的暂停键 = 停止报警。
+        // 报警会一直响到用户按停止，而用户在别的 App 里时唯一能碰到的控件就是它，
+        // 所以必须把「暂停」当作停止用。
+        // 2 秒保护：避免系统在报警刚启动时误调 setPlaying(false) 把报警瞬间掐掉。
+        guard !playing,
+              let started = AlertEngine.shared.alertStartedAt,
+              Date().timeIntervalSince(started) > 2 else { return }
+
+        LogCollector.shared.append("alert: 用户按了浮窗暂停键 → 停止报警")
+        AlertEngine.shared.stopAlert()
     }
 
     func pictureInPictureControllerTimeRangeForPlayback(

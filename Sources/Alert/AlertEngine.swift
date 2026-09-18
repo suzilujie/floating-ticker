@@ -61,6 +61,8 @@ final class AlertEngine: ObservableObject {
     private var hapticTick = 0
     private var lastPrice: Double?
     private var cooldownEndsAt: Date?
+    /// 本次报警开始时间。用于识别浮窗暂停键的"误报停止"（见 PiPController）。
+    private(set) var alertStartedAt: Date?
     /// 本次报警是否来自「试听」——试听结束不进冷却，不污染实盘状态
     private var isTest = false
 
@@ -149,6 +151,7 @@ final class AlertEngine: ObservableObject {
         self.isTest = isTest
         phase = .alerting
         isAlerting = true
+        alertStartedAt = Date()
         sound.start()
         startHaptics()
 
@@ -159,8 +162,17 @@ final class AlertEngine: ObservableObject {
         )
 
         endTimer?.invalidate()
-        let duration = isTest ? Self.testDuration : config.duration
-        let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+        endTimer = nil
+
+        // 实盘报警**不设自动停止**：按用户要求，只要不按「停止」就一直响。
+        // 停止入口共三处：① App 顶部红色按钮 ② 浮窗的暂停键 ③ 设置卡片里的按钮。
+        // 试听例外：固定 6 秒自动停，否则点一下测试就会一直叫。
+        guard isTest else {
+            LogCollector.shared.append("alert: 将持续响铃与震动，直到用户按「停止」")
+            return
+        }
+
+        let timer = Timer(timeInterval: Self.testDuration, repeats: false) { [weak self] _ in
             self?.finish()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -173,6 +185,7 @@ final class AlertEngine: ObservableObject {
         stopHaptics()
         sound.stop()
         isAlerting = false
+        alertStartedAt = nil
 
         if isTest {
             isTest = false

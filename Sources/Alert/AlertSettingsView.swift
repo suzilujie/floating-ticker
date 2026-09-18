@@ -50,9 +50,7 @@ struct AlertSettingsView: View {
             }
             .pickerStyle(.segmented)
 
-            InfoRow(title: "报警时长", value: "\(Int(alert.config.duration)) 秒")
-
-            // 冷却同样用输入框：它是需要按行情波动节奏反复试的参数，
+            // 冷却用输入框：它是需要按行情波动节奏反复试的参数，
             // 且模型里存的是秒、界面用分钟，故用派生 Binding 转换（不改存档格式）
             HStack {
                 Text("冷却")
@@ -69,17 +67,27 @@ struct AlertSettingsView: View {
             HStack {
                 Text("状态")
                 Spacer()
-                Text(alert.isAlerting ? "报警中" : alert.phase.rawValue)
+                Text(alert.isAlerting ? "报警中（直到你按停止）" : alert.phase.rawValue)
                     .foregroundStyle(alert.isAlerting ? Color.red : Color.secondary)
             }
             .font(.subheadline)
 
-            Button("测试报警（立即）") {
-                alert.testFire()
+            // 报警中优先给「停止」，这是最需要一眼可见、一点即中的按钮
+            if alert.isAlerting {
+                Button(role: .destructive) {
+                    alert.stopAlert()
+                } label: {
+                    Text("停止报警")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            } else {
+                Button("测试报警（立即）") {
+                    alert.testFire()
+                }
             }
-            .disabled(alert.isAlerting)
 
-            Text("测试方法：① 点上方按钮 → 立刻验证声音与红闪（走真实判定逻辑，不进冷却，可反复测）；② 想验证真实行情触发 → 把容差改成 500、目标价改成当前价，下一笔行情（1~2 秒）即会触发，完整响 20 秒并进入 5 分钟冷却。测完记得把目标价改回 69000。")
+            Text("实盘报警**不会自动停止**，一直响到按下「停止」为止；冷却时间从停止那一刻起算。三个停止入口：① 本页/首页顶部的红色按钮 ② 浮窗上的暂停键 ③ 直接关掉浮窗（会连带停止）。\n测试：点上方按钮立刻验证声音、红闪与震动（走真实判定逻辑，不进冷却，可反复测）；想验证真实行情触发，把容差改成 500、目标价改成当前价即可，测完记得改回 69000。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

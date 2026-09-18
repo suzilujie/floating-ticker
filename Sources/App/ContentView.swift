@@ -19,6 +19,7 @@ struct ContentView: View {
 
     @ObservedObject private var market = TickerStore.shared
     @ObservedObject private var pip = PiPController.shared
+    @ObservedObject private var alert = AlertEngine.shared
 
     /// 防止 onAppear 重复触发启动
     @State private var didStart = false
@@ -27,6 +28,24 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
+                // 报警中：置顶的停止入口。
+                // 报警不会自动停止，而用户点浮窗回到 App 后第一眼就得能按到它，
+                // 故放在列表最顶部（而不是埋在设置卡片里）。
+                if alert.isAlerting {
+                    Section {
+                        Button(role: .destructive) {
+                            alert.stopAlert()
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "bell.slash.fill")
+                                Text("报警中 · 点此停止")
+                                    .font(.headline)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+
                 // 主信息：实时价格
                 Section {
                     VStack(alignment: .leading, spacing: 4) {

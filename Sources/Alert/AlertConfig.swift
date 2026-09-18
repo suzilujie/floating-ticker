@@ -21,10 +21,11 @@ struct AlertConfig: Codable, Equatable {
     /// 触发方向：true = 仅向下跌破；false = 双向（涨到或跌到都报）
     var onlyDown: Bool = true
 
-    /// 单次报警持续时长（秒）
-    var duration: TimeInterval = 20
-
     /// 报警结束后的冷却时长（秒）——防止价格在阈值附近徘徊时反复轰炸
+    ///
+    /// 注意：实盘报警**没有自动停止时长**，会一直响到用户主动按「停止」，
+    /// 冷却时间从「用户停止的那一刻」开始计。故此处不再有 duration 字段
+    /// （旧存档里的 duration 会被解码器直接忽略，无需迁移）。
     var cooldown: TimeInterval = 60
 
     /// 解除冷却所需的「离开距离」倍数：价格必须离开目标超过 容差×该倍数，
