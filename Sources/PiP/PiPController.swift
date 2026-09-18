@@ -1,5 +1,6 @@
 import AVFoundation
 import AVKit
+import Combine
 import CoreMedia
 import CoreVideo
 import UIKit
@@ -13,7 +14,7 @@ import UIKit
 /// 时间基（曾导致黑屏，本轮显式绑定）：
 /// 显式创建 controlTimebase 并绑定主机时钟，帧 PTS 同样取主机时钟，
 /// 二者严格对齐，确保帧到达即显示。
-final class PiPController: NSObject {
+final class PiPController: NSObject, ObservableObject {
 
     static let shared = PiPController()
 
@@ -25,7 +26,8 @@ final class PiPController: NSObject {
     /// 已投喂的帧数（用于日志节流）
     private var frameCount = 0
 
-    private(set) var isActive = false
+    /// 画中画是否处于活动状态（对外可观察，界面据此显示状态）
+    @Published private(set) var isActive = false
 
     private override init() {
         super.init()
