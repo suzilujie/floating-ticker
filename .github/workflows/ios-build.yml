@@ -31,6 +31,22 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # 注入构建指纹：把本次提交号与构建时间写进 App，界面可直接查看，
+      # 避免"设备上装的是哪一版"产生误判
+      - name: Inject build info
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          BUILT_AT=$(date -u '+%Y-%m-%d %H:%M UTC')
+          {
+            echo 'import Foundation'
+            echo ''
+            echo 'enum BuildInfo {'
+            echo "    static let commit = \"$SHA\""
+            echo "    static let builtAt = \"$BUILT_AT\""
+            echo '}'
+          } > Sources/App/BuildInfo.swift
+          cat Sources/App/BuildInfo.swift
+
       - name: Build for device (unsigned)
         run: |
           xcodebuild build \

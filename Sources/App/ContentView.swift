@@ -101,6 +101,8 @@ struct ContentView: View {
                     InfoRow(title: "设备", value: UIDevice.current.model)
                     InfoRow(title: "系统版本", value: UIDevice.current.systemVersion)
                     InfoRow(title: "App 版本", value: appVersion)
+                    InfoRow(title: "构建提交", value: BuildInfo.commit)
+                    InfoRow(title: "构建时间", value: BuildInfo.builtAt)
                     InfoRow(title: "本次启动", value: Self.dateFormatter.string(from: processStart))
                 }
             }
