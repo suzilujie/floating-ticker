@@ -15,6 +15,16 @@ enum TickerFrameRenderer {
     /// 首像素诊断只输出一次
     private static var didLogFirstPixel = false
 
+    /// 价格格式化：千分位 + 1 位小数（静态缓存，避免每帧创建）
+    private static let priceFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 1
+        formatter.maximumFractionDigits = 1
+        formatter.groupingSeparator = ","
+        return formatter
+    }()
+
     /// 渲染一帧。
     static func render(now: Date) -> CVPixelBuffer? {
         guard let pixelBuffer = makePixelBuffer(size: frameSize) else {
@@ -89,25 +99,46 @@ enum TickerFrameRenderer {
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }
 
+        // 取当前行情快照：M2 起使用真实数据，无数据时退回占位显示
+        let snapshot = TickerStore.shared.snapshot
+
         // 币对标题
-        let title = "BTC / USDT  现货" as NSString
+        let title = (snapshot?.displayName ?? "BTC / USDT  永续") as NSString
         title.draw(at: CGPoint(x: 28, y: 30), withAttributes: [
             .font: UIFont.systemFont(ofSize: 26, weight: .semibold),
             .foregroundColor: UIColor(red: 0.89, green: 0.91, blue: 0.95, alpha: 1)
         ])
 
-        // 占位价格（等宽数字，避免宽度抖动）
-        let price = "76,000.0" as NSString
+        // 最新价（等宽数字，避免宽度抖动）
+        let priceText: String
+        if let last = snapshot?.last,
+           let formatted = priceFormatter.string(from: NSNumber(value: last)) {
+            priceText = formatted
+        } else {
+            priceText = "--"
+        }
+        let price = priceText as NSString
         price.draw(at: CGPoint(x: 28, y: 80), withAttributes: [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 64, weight: .bold),
             .foregroundColor: UIColor.white
         ])
 
-        // 占位涨跌幅（绿色）
-        let change = "+0.71%" as NSString
+        // 24h 涨跌幅（绿涨红跌）
+        let changeText: String
+        let changeColor: UIColor
+        if let change = snapshot?.changePercent {
+            changeText = String(format: "%+.2f%%", change)
+            changeColor = change >= 0
+                ? UIColor(red: 0.29, green: 0.85, blue: 0.5, alpha: 1)
+                : UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)
+        } else {
+            changeText = "等待行情"
+            changeColor = UIColor(white: 0.55, alpha: 1)
+        }
+        let change = changeText as NSString
         change.draw(at: CGPoint(x: 28, y: 158), withAttributes: [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 28, weight: .medium),
-            .foregroundColor: UIColor(red: 0.29, green: 0.85, blue: 0.5, alpha: 1)
+            .foregroundColor: changeColor
         ])
 
         // 右上角实时时钟：每秒跳动，证明帧泵在持续出帧

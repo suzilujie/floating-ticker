@@ -369,4 +369,91 @@
   M2：接入真实行情（Binance 公共数据域 WebSocket，已在 PC 侧实测 60 秒零断流），
       并把渲染器中的占位数据替换为真实价格。
 
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段十一：M2 接入真实行情
+--------------------------------------------------------------------------------
+
+■ 新增文件（Sources/Market/）
+  TickerSnapshot.swift              行情快照模型（交易对、最新价、涨跌幅、时间）
+  MarketDataSource.swift            行情源协议 + MarketState 状态枚举
+  BinanceVisionWebSocketSource.swift L1 主源（公共数据域 WebSocket）
+  BinanceVisionRestSource.swift      L2 兜底源（同域 REST 轮询，2 秒间隔）
+  TickerStore.swift                 状态聚合 + 层级降级（L1 失败自动切 L2）
+
+■ 修改文件
+  Sources/PiP/TickerFrameRenderer.swift  渲染改用 TickerStore 的真实快照：
+                                         价格千分位格式化、涨跌绿红配色、无数据时占位
+  Sources/App/ContentView.swift          新增「行情（M2）」区块：开启/停止行情，
+                                         显示数据源、连接状态、最新价、涨跌幅、
+                                         推送次数、最后推送时间
+
+■ 设计要点
+  1) 协议抽象：所有数据源实现 MarketDataSource，TickerStore 只依赖协议，
+     后续新增 CoinEx（L3 异构兜底）或 OKX（L4 代理模式）无需改动上层。
+  2) 层级降级：当前源上报 failed 即自动切换到下一层级，避免手动干预。
+  3) 状态可观测：数据源名、状态、推送次数、最后推送时间全部上界面，
+     无 Mac 环境下的排错依赖这些可见指标。
+  4) 渲染端只读 TickerStore.shared.snapshot，改一处即同时影响
+     App 内显示与画中画悬浮窗（分层架构的收益）。
+  5) 心跳看门狗：5 秒无推送即记录（完整健康检查与回切留待 M4）。
+
+■ 已固化的 PiP 可用配置（M1 成果，本轮未改动相关代码）
+  IOSurface 支撑的像素缓冲 + 显式 controlTimebase + 1x1 宿主容器 +
+  DisplayImmediately 附件 + AVAudioSession(.playback)。
+
+■ 影响范围
+  新增行情模块；渲染器与界面各一处修改。PiP 链路代码未触碰。
+
+■ 潜在风险
+  R18 手机能否直连 data-stream.binance.vision 尚未实测（PC 侧通过）；
+      若不通，TickerStore 会自动降级到同域 REST（L2）；若同域整体被封，
+      需在 M4 启用 L3 异构兜底（CoinEx，实测直连 440ms 可用）。
+  R19 REST 24hr 端点字段名（lastPrice / priceChangePercent）需在真机确认，
+      若字段不符则界面显示 --，日志可见解析失败。
+
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段十二：品种修正（现货 → 永续）与数据源重选
+--------------------------------------------------------------------------------
+
+■ 变更起因
+  用户更正：产品价格口径为永续（Perpetual / SWAP），此前按现货实现属选型错误。
+  此时 M2 代码尚未推送（用户及时取消了提交），避免了返工浪费。
+
+■ 实测结论（脚本 scripts/check-perp.ps1，直连与代理双模式）
+  1) *.binance.vision 公共数据域只提供现货：fapi 路径返回 404，确认不可用。
+  2) 直连可达的永续源：
+     - Gate 期货 WS  wss://fx-ws.gateio.ws/v4/ws/usdt        968ms，1 条/秒  ★
+     - Gate 期货 REST api.gateio.ws/api/v4/futures/usdt/...  596ms          ★
+     - CoinEx 永续 REST api.coinex.com/v2/futures/ticker     721ms
+  3) 仅代理可达：OKX SWAP（WS 924ms / REST 1466ms）、Binance fapi REST 1135ms
+  4) Binance 永续 WS（fstream）直连与代理均不可达，弃用。
+
+■ 字段确认（脚本 scripts/check-perp-fields.ps1，拉完整 payload）
+  - Gate WS：event=="update" → result[0].last / result[0].change_percentage
+  - Gate REST：根节点为数组 → [0].last / [0].change_percentage
+  - CoinEx REST：data[0].last，无涨跌幅字段，需用 (last-open)/open*100 计算
+  （先拉真实 payload 再写解析代码，避免字段猜错浪费一轮 CI）
+
+■ 代码变更
+  删除：Sources/Market/BinanceVisionWebSocketSource.swift（现货，作废）
+        Sources/Market/BinanceVisionRestSource.swift（现货，作废）
+  新增：Sources/Market/GateFuturesWebSocketSource.swift  L1 主源
+        Sources/Market/GateFuturesRestSource.swift       L2 同域兜底
+        Sources/Market/CoinExFuturesRestSource.swift     L3 异构兜底
+  修改：TickerStore.swift 数据源列表改为三级永续源
+        TickerFrameRenderer.swift 占位标题改为「BTC / USDT  永续」
+
+■ 文档同步
+  docs/设计文档.html：第 4 章新增品种修正说明；新增 4.5 节「永续源实测与分层」，
+  含完整实测表格与选型结论；原 4.1/4.2 现货清单标记为已作废。
+
+■ 影响范围
+  行情层整体替换；PiP 渲染链路代码未变（仅渲染文案）。
+
+■ 潜在风险
+  R20 Gate 期货 WS 的长期稳定性未知（单次实测 968ms 通过）。
+      L2/L3 已就位；若 Gate 整体不可用会自动降级到 CoinEx（异构厂商）。
+  R21 三个源的价格存在基差（实测 CoinEx 77879 / Gate 77935 / OKX 77947），
+      切换源时价格会小幅跳变（约 0.1%）。M4 可考虑统一到指数价或固定单一源。
+
 ================================================================================

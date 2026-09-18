@@ -24,6 +24,12 @@ struct ContentView: View {
     /// 画中画是否已启动（M1）
     @State private var pipRunning = false
 
+    /// 行情订阅是否已启动（M2）
+    @State private var marketRunning = false
+
+    /// 行情状态（M2）
+    @ObservedObject private var market = TickerStore.shared
+
     /// 调试日志文本（M1 黑屏排查用）
     @State private var logText = ""
 
@@ -48,6 +54,26 @@ struct ContentView: View {
                          : "系统不支持画中画：本方案需重新评估。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("行情（M2）") {
+                    Button(marketRunning ? "停止行情" : "开启行情") {
+                        if marketRunning {
+                            market.stop()
+                            marketRunning = false
+                        } else {
+                            market.start()
+                            marketRunning = true
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    InfoRow(title: "数据源", value: market.activeSourceName)
+                    InfoRow(title: "连接状态", value: market.state.describe)
+                    InfoRow(title: "最新价", value: latestPriceText)
+                    InfoRow(title: "24h 涨跌", value: changeText)
+                    InfoRow(title: "推送次数", value: "\(market.tickCount)")
+                    InfoRow(title: "最后推送", value: lastTickText)
                 }
 
                 Section("画中画测试（M1）") {
@@ -123,6 +149,21 @@ struct ContentView: View {
     }
 
     // MARK: - 计算属性
+
+    private var latestPriceText: String {
+        guard let last = market.snapshot?.last else { return "--" }
+        return String(format: "%.1f", last)
+    }
+
+    private var changeText: String {
+        guard let change = market.snapshot?.changePercent else { return "--" }
+        return String(format: "%+.2f%%", change)
+    }
+
+    private var lastTickText: String {
+        guard let at = market.lastTickAt else { return "--" }
+        return Self.dateFormatter.string(from: at)
+    }
 
     private var pipSupported: Bool {
         AVPictureInPictureController.isPictureInPictureSupported()

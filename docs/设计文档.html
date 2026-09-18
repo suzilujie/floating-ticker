@@ -292,6 +292,12 @@ iPhone 上运行（证书 7 天有效）
 
 <h2 id="datasource">4. 数据源架构</h2>
 
+<blockquote>
+<p><b>品种修正（2026-09-18）</b>：产品价格口径为 <b>永续（Perpetual / SWAP）</b>，非现货。此前基于现货选型，现更正。</p>
+<p>实测确认 <code>*.binance.vision</code> 公共数据域<b>只提供现货</b>（futures 路径返回 404），
+因此 4.1 / 4.2 的现货源清单已作废，替代方案见 <b>4.5 节</b>。</p>
+</blockquote>
+
 <h3 id="datasource-probe">4.1 实测结论（2026-09-17，关闭 VPN 直连实测）</h3>
 
 <table>
@@ -387,6 +393,55 @@ struct TickerSnapshot {
     let updatedAt: Date
 }</code></pre>
 <p>所有源实现同一协议，<code>MarketStore</code> 只依赖协议，切换源不影响上层渲染。</p>
+
+<h3 id="datasource-perp">4.5 永续源实测与分层（2026-09-18 修正后）</h3>
+
+<p>关闭 VPN 直连实测（脚本 <code>scripts/check-perp.ps1</code> 与 <code>check-perp-fields.ps1</code>）：</p>
+
+<table>
+<thead>
+<tr><th>数据源</th><th>类型</th><th>直连</th><th>经代理</th><th>实测延迟</th><th>关键字段</th><th>判定</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>Gate 期货 <code>fx-ws.gateio.ws/v4/ws/usdt</code></td><td>WebSocket</td>
+<td class="ok">✅</td><td class="ok">✅</td><td>968ms，1 条/秒</td>
+<td><code>event:"update"</code> → <code>result[0].last</code> / <code>change_percentage</code></td>
+<td><b>L1 主源</b></td>
+</tr>
+<tr>
+<td>Gate 期货 <code>api.gateio.ws/api/v4/futures/usdt/tickers</code></td><td>REST</td>
+<td class="ok">✅</td><td class="ok">✅</td><td>596ms</td>
+<td>数组根 <code>[0].last</code> / <code>change_percentage</code></td>
+<td><b>L2 同域兜底</b></td>
+</tr>
+<tr>
+<td>CoinEx 永续 <code>api.coinex.com/v2/futures/ticker</code></td><td>REST</td>
+<td class="ok">✅</td><td class="ok">✅</td><td>721ms</td>
+<td><code>data[0].last</code>，涨跌幅需用 <code>last</code> 与 <code>open</code> 计算</td>
+<td><b>L3 异构兜底</b></td>
+</tr>
+<tr>
+<td>OKX SWAP <code>ws.okx.com:8443</code></td><td>WebSocket</td>
+<td class="no">❌</td><td class="ok">✅</td><td>924ms</td>
+<td><code>arg.instId</code> → <code>data[0].last</code> / <code>open24h</code></td>
+<td>L4 代理模式（与截图品种一致）</td>
+</tr>
+<tr>
+<td>Binance 永续 <code>fstream</code> / <code>fapi</code></td><td>WS + REST</td>
+<td class="no">❌</td><td class="warn">REST 可通</td><td>1135ms（REST 代理）</td>
+<td>—</td>
+<td class="no">不采用（WS 双向均不可达）</td>
+</tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>选型结论</b>：永续口径下主源改用 <b>Gate 期货 WebSocket</b>——
+它<b>无需代理即可直连</b>（968ms、每秒一条），比原先的现货方案更理想；
+<b>CoinEx 永续 REST</b> 作为异构厂商兜底（Ping 不同 CDN、不同域名族）；
+OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致。
+</div>
 
 <h2 id="pip">5. PiP 渲染管线</h2>
 
