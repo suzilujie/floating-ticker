@@ -52,7 +52,7 @@ final class PiPController: NSObject {
         // 每次启动都创建新的显示层，并显式绑定主机时钟时间基
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.frame = containerView?.bounds ?? CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
@@ -189,16 +189,16 @@ final class PiPController: NSObject {
             return
         }
 
-        // 诊断版：把显示层放进一个真实可见的容器，用于直接观察
-        // "图层本身到底渲染不渲染"——若应用内可见区域有画面而画中画没有，
-        // 则问题定位在画中画一侧；若应用内也是黑的，则问题在图层/帧一侧。
-        let previewSize = CGSize(width: 320, height: 100)
-        let view = UIView(frame: CGRect(x: 8, y: 120, width: previewSize.width, height: previewSize.height))
+        // 结论（经两轮对照验证）：
+        // - 可见的大容器会阻止 PiP 启动（系统无任何回调）
+        // - 渲染是否正常取决于像素缓冲是否有 IOSurface 支撑，与容器可见性无关
+        // 故容器恢复为 1x1，渲染由 IOSurface 保证。
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         window.addSubview(view)
         containerView = view
-        LogCollector.shared.append("attach: 诊断容器 320x100 可见，用于观察图层是否渲染")
+        LogCollector.shared.append("attach: container 1x1 added")
     }
 }
 
