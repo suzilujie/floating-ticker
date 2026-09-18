@@ -52,7 +52,7 @@ final class PiPController: NSObject {
         // 每次启动都创建新的显示层，并显式绑定主机时钟时间基
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        layer.frame = containerView?.bounds ?? CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
@@ -189,15 +189,16 @@ final class PiPController: NSObject {
             return
         }
 
-        // 实测经验：容器用 1x1 时 PiP 能成功启动，换成 320x100 可见容器后
-        // PiP 反而完全启动不了（系统无任何回调）。故恢复 1x1。
-        // 不显示的问题改由样本缓冲的 DisplayImmediately 附件解决。
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        // 诊断版：把显示层放进一个真实可见的容器，用于直接观察
+        // "图层本身到底渲染不渲染"——若应用内可见区域有画面而画中画没有，
+        // 则问题定位在画中画一侧；若应用内也是黑的，则问题在图层/帧一侧。
+        let previewSize = CGSize(width: 320, height: 100)
+        let view = UIView(frame: CGRect(x: 8, y: 120, width: previewSize.width, height: previewSize.height))
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         window.addSubview(view)
         containerView = view
-        LogCollector.shared.append("attach: container 1x1 added to window")
+        LogCollector.shared.append("attach: 诊断容器 320x100 可见，用于观察图层是否渲染")
     }
 }
 

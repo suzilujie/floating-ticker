@@ -58,7 +58,10 @@ enum TickerFrameRenderer {
 
     private static func makePixelBuffer(size: CGSize) -> CVPixelBuffer? {
         var pixelBuffer: CVPixelBuffer?
+        // IOSurface 支撑是 AVSampleBufferDisplayLayer 硬件合成管线的前提：
+        // 缺少该键时，帧能成功入队、图层状态正常，但画面始终不显示（纯黑）。
         let attrs: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
             kCVPixelBufferCGImageCompatibilityKey as String: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
         ]

@@ -51,6 +51,9 @@ struct ContentView: View {
                 }
 
                 Section("画中画测试（M1）") {
+                    Text("诊断提示：点击后屏幕上方会出现一块 320×100 的图层区域。若那里有画面而画中画没有，说明问题在画中画一侧；若那里也是黑的，问题在图层/帧一侧。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     if pipSupported {
                         Button(pipRunning ? "关闭悬浮窗" : "开启悬浮窗") {
                             if pipRunning {
