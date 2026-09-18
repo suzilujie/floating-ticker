@@ -115,6 +115,13 @@ enum TickerFrameRenderer {
         context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
         context.fill(CGRect(origin: .zero, size: frameSize))
 
+        // 报警视觉叠在底色之上、内容之下。此处仍在画布坐标系，
+        // 若放到内容偏移之后再画，坐标会对不上整窗尺寸。
+        let alert = AlertEngine.shared
+        if alert.isAlerting {
+            drawAlertOverlay(context: context, now: now)
+        }
+
         // 内容区下移「留白的一半」，使其在加高后的画布中垂直居中。
         // 注：上一行已把坐标系翻转为 UIKit 式（原点左上、+y 向下），故此处为下移。
         context.translateBy(x: 0, y: contentOffsetY)
@@ -125,11 +132,19 @@ enum TickerFrameRenderer {
         // 取当前行情快照：M2 起使用真实数据，无数据时退回占位显示
         let snapshot = TickerStore.shared.snapshot
 
-        // 币对标题
-        let title = (snapshot?.displayName ?? "BTC / USDT  永续") as NSString
+        // 闪烁相位：报警时以 2 Hz 在两种颜色间交替（频率取值的理由见 blinkHalfPeriod）
+        let blinkOn = Int(now.timeIntervalSince1970 / blinkHalfPeriod) % 2 == 0
+
+        // 左上角标题：报警期间临时替换为报警文案，一行说清发生了什么
+        let titleText = alert.isAlerting
+            ? alert.alertTitle
+            : (snapshot?.displayName ?? "BTC / USDT  永续")
+        let title = titleText as NSString
         title.draw(at: CGPoint(x: 28, y: 30), withAttributes: [
             .font: UIFont.systemFont(ofSize: 26, weight: .semibold),
-            .foregroundColor: UIColor(red: 0.89, green: 0.91, blue: 0.95, alpha: 1)
+            .foregroundColor: alert.isAlerting
+                ? UIColor(red: 1.0, green: 0.45, blue: 0.45, alpha: 1)
+                : UIColor(red: 0.89, green: 0.91, blue: 0.95, alpha: 1)
         ])
 
         // 最新价（等宽数字，避免宽度抖动）
@@ -143,7 +158,10 @@ enum TickerFrameRenderer {
         let price = priceText as NSString
         price.draw(at: CGPoint(x: 28, y: 80), withAttributes: [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 64, weight: .bold),
-            .foregroundColor: UIColor.white
+            // 报警时在「报警红 ↔ 纯白」之间闪烁 —— 这是一整条浮窗里最抓眼的一处
+            .foregroundColor: alert.isAlerting
+                ? (blinkOn ? Self.alertRed : UIColor.white)
+                : UIColor.white
         ])
 
         // 24h 涨跌幅（绿涨红跌）
@@ -174,5 +192,34 @@ enum TickerFrameRenderer {
         ]
         let clockSize = clock.size(withAttributes: clockAttrs)
         clock.draw(at: CGPoint(x: frameSize.width - clockSize.width - 28, y: 158), withAttributes: clockAttrs)
+    }
+
+    // MARK: - 报警视觉
+
+    /// 报警红：比涨跌红更亮更饱和，专门用于「报警」语义，避免与"跌了"混淆
+    private static let alertRed = UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 1)
+
+    /// 闪烁半周期：0.25 秒 ⇒ 2 Hz。
+    ///
+    /// 刻意压在 3 Hz 以下：3~30 Hz 的闪烁对光敏性癫痫人群有风险，
+    /// 2 Hz 同样醒目但更安全。报警期间帧泵为 8 fps，恰好每相位 2 帧，交替干净。
+    private static let blinkHalfPeriod: TimeInterval = 0.25
+
+    /// 整窗红光脉冲 + 四边红框。
+    ///
+    /// 绘制点在「底色之后、内容偏移之前」，故此处使用的是画布坐标系。
+    private static func drawAlertOverlay(context: CGContext, now: Date) {
+        let phase = Int(now.timeIntervalSince1970 / blinkHalfPeriod) % 2
+
+        // 红光脉冲：两级透明度交替，形成呼吸感而非硬闪
+        context.setFillColor(
+            UIColor(red: 0.98, green: 0.30, blue: 0.30, alpha: phase == 0 ? 0.34 : 0.12).cgColor
+        )
+        context.fill(CGRect(origin: .zero, size: frameSize))
+
+        // 四边红框：画布 640 宽映射到窗口约 154pt，14 单位 ≈ 3.4pt，足够醒目
+        context.setStrokeColor(UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 0.95).cgColor)
+        context.setLineWidth(14)
+        context.stroke(CGRect(origin: .zero, size: frameSize).insetBy(dx: 7, dy: 7))
     }
 }

@@ -64,6 +64,9 @@ struct ContentView: View {
                     }
                 }
 
+                // 价格报警：目标价、容差、状态与试听
+                AlertSettingsView()
+
                 // 诊断信息：默认折叠，不干扰主界面
                 Section {
                     DisclosureGroup("诊断信息") {
@@ -100,6 +103,7 @@ struct ContentView: View {
         LogCollector.shared.append("app: 自动启动（无用户交互）")
         PiPController.shared.start()
         market.start()
+        AlertEngine.shared.start()
         refreshLog()
     }
 

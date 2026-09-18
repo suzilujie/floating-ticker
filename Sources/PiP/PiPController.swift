@@ -23,6 +23,15 @@ final class PiPController: NSObject, ObservableObject {
     private var containerView: UIView?
     private let framePump = FramePump()
 
+    /// 报警期间提高帧率的订阅（见 alertFrameInterval 注释）
+    private var alertCancellable: AnyCancellable?
+
+    /// 常态帧间隔：1 fps 心跳保活
+    private static let idleFrameInterval: TimeInterval = 1.0
+    /// 报警帧间隔：8 fps。闪烁为 2 Hz（每 0.25 秒切换一次），
+    /// 8 fps 恰好每相位 2 帧，交替干净不抖动。
+    private static let alertFrameInterval: TimeInterval = 0.125
+
     /// 已投喂的帧数（用于日志节流）
     private var frameCount = 0
 
@@ -34,6 +43,15 @@ final class PiPController: NSObject, ObservableObject {
         framePump.onFrame = { [weak self] buffer in
             self?.enqueue(buffer)
         }
+
+        // 报警期间把帧泵从 1 fps 提到 8 fps —— 1 fps 下文字闪烁根本闪不起来
+        alertCancellable = AlertEngine.shared.$isAlerting
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isAlerting in
+                self?.framePump.setInterval(
+                    isAlerting ? Self.alertFrameInterval : Self.idleFrameInterval
+                )
+            }
     }
 
     // MARK: - 对外接口

@@ -16,6 +16,12 @@ final class TickerStore: ObservableObject {
     @Published private(set) var tickCount = 0
     @Published private(set) var lastTickAt: Date?
 
+    /// 每笔行情推送后的回调（报警引擎等下游模块使用）。
+    ///
+    /// 说明：刻意用显式回调而非让外部订阅 `$snapshot`——`snapshot` 是
+    /// `private(set)`，其投影值跨文件访问存在版本差异风险；回调更直白也更好测。
+    var onSnapshot: ((TickerSnapshot) -> Void)?
+
     private var sources: [MarketDataSource] = []
     private var currentIndex = 0
     private var currentSource: MarketDataSource?
@@ -67,6 +73,7 @@ final class TickerStore: ObservableObject {
             self.snapshot = snapshot
             self.tickCount += 1
             self.lastTickAt = snapshot.updatedAt
+            self.onSnapshot?(snapshot)
         }
 
         source.onState = { [weak self] newState in
