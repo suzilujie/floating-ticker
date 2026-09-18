@@ -87,7 +87,6 @@ final class PiPController: NSObject {
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
             .first(where: { $0.isKeyWindow })
-            ?? UIApplication.shared.windows.first
         guard let window = window else { return }
 
         // 1x1 容器视图仅用于让显示层进入可见层级，视觉上不可见
@@ -134,7 +133,7 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         skipByInterval skipInterval: CMTime,
-        completionHandler: @escaping () -> Void
+        completion completionHandler: @escaping () -> Void
     ) {
         completionHandler()
     }

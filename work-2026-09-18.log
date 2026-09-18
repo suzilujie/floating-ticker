@@ -77,4 +77,24 @@
   3) Sideloadly 覆盖安装（同 bundle id，同 Apple ID，Developer Mode 已开）
   4) 打开 App → 点「开启悬浮窗」→ 观察悬浮窗与时钟跳动
 
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段三：M1 首次编译错误修复
+--------------------------------------------------------------------------------
+
+■ 错误现象（CI run 35310635343 失败）
+  PiPController.swift:134 error:
+  'pictureInPictureController(_:skipByInterval:completionHandler:)'
+  has been renamed to 'pictureInPictureController(_:skipByInterval:completion:)'
+  原因：iOS 18 SDK（Xcode 16.4）中该代理方法的参数标签由 completionHandler
+  改为 completion。
+
+■ 修复
+  1) PiPController.swift：skipByInterval 方法参数标签 completionHandler → completion
+  2) PiPController.swift：移除 UIApplication.shared.windows 弃用回退
+     （iOS 15 起弃用，改为仅使用 connectedScenes + UIWindowScene.windows）
+
+■ 附带确认
+  其余 PiP 相关 API（ContentSource、播放代理其余方法、SampleBuffer 封装等）
+  均编译通过，仅此一处签名不符——说明整体骨架的 API 使用基本正确。
+
 ================================================================================
