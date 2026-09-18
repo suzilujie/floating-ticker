@@ -4,43 +4,39 @@ import UIKit
 
 /// 把行情内容绘制成一帧 BGRA 像素缓冲。
 ///
-/// M1 阶段用「占位价格 + 每秒跳动的时钟」验证帧渲染链路：
-/// 时钟每秒跳一下，肉眼即可确认帧在持续流动。
-/// 后续 M3 会把占位内容替换为真实行情数据。
+/// 版式：巨号价格（第一行）+ 币对名与涨跌幅（第二行），对齐参考 App 的观感。
+/// 无行情时价格显示 `--`，并以「等待行情」占位。
 enum TickerFrameRenderer {
 
-    /// 画面画布尺寸。
+    /// 画面画布尺寸（1.5:1，对齐参考 App 的窗口形状）。
     ///
     /// 关键平台约束（真机实测确认）：PiP 窗口的**高度由系统定死**（小档约 96pt），
     /// **宽度 = 窗口高度 × 画面宽高比**。没有任何公开 API 能设定窗口尺寸，
-    /// 用户侧的双指捏合缩放也不生效。因此「把浮窗改小」的唯一杠杆是**调小宽高比**：
+    /// 用户侧的双指捏合缩放也不生效。故调整窗口形状的唯一杠杆是**宽高比**：
     ///
-    ///   640×200（3.2:1）→ 窗口约 307×96
-    ///   640×400（1.6:1）→ 窗口约 154×96（面积正好减半）
+    ///   640×200（3.2:1）→ 窗口约 307×96（细长条）
+    ///   640×400（1.6:1）→ 窗口约 154×96（加留白缩小，内容被挤小）
+    ///   600×400（1.5:1）→ 窗口约 144×96（本轮：对齐参考 App 的方形观感）
     ///
-    /// 画布加高后，行情条仍按原设计绘制在 200 高的内容带内并垂直居中，
-    /// 上下多出的部分为底色留白。附带收益：系统的关闭按钮与画中画图标压在窗口
-    /// 四角，原先会盖住左上角的币对名，加留白后控件落进留白区，不再遮挡文字。
-    static let frameSize = CGSize(width: 640, height: 400)
-
-    /// 内容区高度（行情条本身的设计高度，不随画布高度变化）
-    private static let contentHeight: CGFloat = 200
-
-    /// 内容区在画布中的垂直偏移（使行情条在加高后的画布中居中）
-    private static var contentOffsetY: CGFloat {
-        (frameSize.height - contentHeight) / 2
-    }
+    /// 字号的设计基准：画布 600 宽映射到窗口约 144pt，缩放比约 0.24。
+    /// 价格以 120pt 绘制 → 屏幕上约 29pt，与参考 App 的"巨号价格"观感一致；
+    /// 币对名 40pt → 约 9.6pt。**内容铺满整张画布，不再留边**。
+    static let frameSize = CGSize(width: 600, height: 400)
 
     /// 首像素诊断只输出一次
     private static var didLogFirstPixel = false
 
-    /// 价格格式化：千分位 + 1 位小数（静态缓存，避免每帧创建）
+    /// 价格格式化：1 位小数，**不带千分位**（静态缓存，避免每帧创建）。
+    ///
+    /// 去掉千分位是刻意的取舍：`78005.1` 是 7 个字符，`78,005.1` 是 8 个，
+    /// 在 600 宽的画布里放到同样字号会宽出约 10%。参考 App 也是 7 字符的写法，
+    /// 这正是它能把价格做得那么大、而窗口不显得挤的原因。
     private static let priceFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = false
         formatter.minimumFractionDigits = 1
         formatter.maximumFractionDigits = 1
-        formatter.groupingSeparator = ","
         return formatter
     }()
 
@@ -111,20 +107,15 @@ enum TickerFrameRenderer {
         context.translateBy(x: 0, y: frameSize.height)
         context.scaleBy(x: 1, y: -1)
 
-        // 深色背景（铺满整个画布，含上下留白）
+        // 深色背景（铺满整张画布）
         context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
         context.fill(CGRect(origin: .zero, size: frameSize))
 
-        // 报警视觉叠在底色之上、内容之下。此处仍在画布坐标系，
-        // 若放到内容偏移之后再画，坐标会对不上整窗尺寸。
+        // 报警视觉叠在底色之上、内容之下，使用整张画布的坐标
         let alert = AlertEngine.shared
         if alert.isAlerting {
             drawAlertOverlay(context: context, now: now)
         }
-
-        // 内容区下移「留白的一半」，使其在加高后的画布中垂直居中。
-        // 注：上一行已把坐标系翻转为 UIKit 式（原点左上、+y 向下），故此处为下移。
-        context.translateBy(x: 0, y: contentOffsetY)
 
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }
@@ -135,19 +126,13 @@ enum TickerFrameRenderer {
         // 闪烁相位：报警时以 2 Hz 在两种颜色间交替（频率取值的理由见 blinkHalfPeriod）
         let blinkOn = Int(now.timeIntervalSince1970 / blinkHalfPeriod) % 2 == 0
 
-        // 左上角标题：报警期间临时替换为报警文案，一行说清发生了什么
-        let titleText = alert.isAlerting
-            ? alert.alertTitle
-            : (snapshot?.displayName ?? "BTC / USDT  永续")
-        let title = titleText as NSString
-        title.draw(at: CGPoint(x: 28, y: 30), withAttributes: [
-            .font: UIFont.systemFont(ofSize: 26, weight: .semibold),
-            .foregroundColor: alert.isAlerting
-                ? UIColor(red: 1.0, green: 0.45, blue: 0.45, alpha: 1)
-                : UIColor(red: 0.89, green: 0.91, blue: 0.95, alpha: 1)
-        ])
+        // 版式（画布 600×400，映射到窗口约 144×96pt）：
+        //   第一行：巨号价格，占满宽度，整窗的视觉主体
+        //   第二行：左侧币对名 + 涨跌幅；数据滞后时右侧改为橙色提示
+        let margin: CGFloat = 40
+        let lineY: CGFloat = 251
 
-        // 最新价（等宽数字，避免宽度抖动）
+        // 最新价（等宽数字，避免跳动时宽度抖动）
         let priceText: String
         if let last = snapshot?.last,
            let formatted = priceFormatter.string(from: NSNumber(value: last)) {
@@ -156,42 +141,63 @@ enum TickerFrameRenderer {
             priceText = "--"
         }
         let price = priceText as NSString
-        price.draw(at: CGPoint(x: 28, y: 80), withAttributes: [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 64, weight: .bold),
-            // 报警时在「报警红 ↔ 纯白」之间闪烁 —— 这是一整条浮窗里最抓眼的一处
+        price.draw(at: CGPoint(x: margin, y: 81), withAttributes: [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 120, weight: .bold),
+            // 报警时在「报警红 ↔ 纯白」之间闪烁 —— 这是整窗里最抓眼的一处
             .foregroundColor: alert.isAlerting
                 ? (blinkOn ? Self.alertRed : UIColor.white)
                 : UIColor.white
         ])
 
-        // 24h 涨跌幅（绿涨红跌）
-        let changeText: String
-        let changeColor: UIColor
-        if let change = snapshot?.changePercent {
-            changeText = String(format: "%+.2f%%", change)
-            changeColor = change >= 0
-                ? UIColor(red: 0.29, green: 0.85, blue: 0.5, alpha: 1)
-                : UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)
-        } else {
-            changeText = "等待行情"
-            changeColor = UIColor(white: 0.55, alpha: 1)
-        }
-        let change = changeText as NSString
-        change.draw(at: CGPoint(x: 28, y: 158), withAttributes: [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 28, weight: .medium),
-            .foregroundColor: changeColor
-        ])
-
-        // 右上角实时时钟：每秒跳动，证明帧泵在持续出帧
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let clock = formatter.string(from: now) as NSString
-        let clockAttrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 26, weight: .regular),
-            .foregroundColor: UIColor(white: 0.6, alpha: 1)
+        // 第二行左侧：报警时整行替换为报警文案，一行说清发生了什么
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 40, weight: .semibold),
+            .foregroundColor: alert.isAlerting
+                ? Self.alertRed
+                : UIColor(red: 0.89, green: 0.91, blue: 0.95, alpha: 1)
         ]
-        let clockSize = clock.size(withAttributes: clockAttrs)
-        clock.draw(at: CGPoint(x: frameSize.width - clockSize.width - 28, y: 158), withAttributes: clockAttrs)
+        let labelText = alert.isAlerting
+            ? alert.alertTitle
+            : (snapshot?.displayName ?? "BTC / USDT  永续")
+        let label = labelText as NSString
+        label.draw(at: CGPoint(x: margin, y: lineY), withAttributes: labelAttrs)
+
+        // 第二行右侧：正常显示 24h 涨跌幅（绿涨红跌）；数据滞后时改为橙色提示。
+        // 这取代了原先常驻的时钟：既对齐参考 App 的干净观感，
+        // 又保留了"喂价是否还活着"这一判断依据（滞后才提示，正常时不占位）。
+        if !alert.isAlerting {
+            let staleSeconds = snapshot.map { now.timeIntervalSince($0.updatedAt) } ?? 0
+            let trailingText: String
+            let trailingColor: UIColor
+            let trailingFont: UIFont
+
+            if staleSeconds > 5 {
+                trailingText = "⚠ 滞后 \(Int(staleSeconds))s"
+                trailingColor = UIColor(red: 0.98, green: 0.72, blue: 0.28, alpha: 1)
+                trailingFont = UIFont.monospacedDigitSystemFont(ofSize: 32, weight: .medium)
+            } else if let change = snapshot?.changePercent {
+                trailingText = String(format: "%+.2f%%", change)
+                trailingColor = change >= 0
+                    ? UIColor(red: 0.29, green: 0.85, blue: 0.5, alpha: 1)
+                    : UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)
+                trailingFont = UIFont.monospacedDigitSystemFont(ofSize: 36, weight: .medium)
+            } else {
+                trailingText = "等待行情"
+                trailingColor = UIColor(white: 0.55, alpha: 1)
+                trailingFont = UIFont.monospacedDigitSystemFont(ofSize: 36, weight: .medium)
+            }
+
+            let trailing = trailingText as NSString
+            let trailingAttrs: [NSAttributedString.Key: Any] = [
+                .font: trailingFont,
+                .foregroundColor: trailingColor
+            ]
+            let labelWidth = label.size(withAttributes: labelAttrs).width
+            let trailingWidth = trailing.size(withAttributes: trailingAttrs).width
+            // 右对齐，但绝不与左侧文字重叠
+            let x = max(margin + labelWidth + 16, frameSize.width - margin - trailingWidth)
+            trailing.draw(at: CGPoint(x: x, y: lineY + 4), withAttributes: trailingAttrs)
+        }
     }
 
     // MARK: - 报警视觉
@@ -207,7 +213,7 @@ enum TickerFrameRenderer {
 
     /// 整窗红光脉冲 + 四边红框。
     ///
-    /// 绘制点在「底色之后、内容偏移之前」，故此处使用的是画布坐标系。
+    /// 绘制点在「底色之后、内容之前」，使用整张画布的坐标。
     private static func drawAlertOverlay(context: CGContext, now: Date) {
         let phase = Int(now.timeIntervalSince1970 / blinkHalfPeriod) % 2
 
@@ -217,7 +223,7 @@ enum TickerFrameRenderer {
         )
         context.fill(CGRect(origin: .zero, size: frameSize))
 
-        // 四边红框：画布 640 宽映射到窗口约 154pt，14 单位 ≈ 3.4pt，足够醒目
+        // 四边红框：画布 600 宽映射到窗口约 144pt，14 单位 ≈ 3.4pt，足够醒目
         context.setStrokeColor(UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 0.95).cgColor)
         context.setLineWidth(14)
         context.stroke(CGRect(origin: .zero, size: frameSize).insetBy(dx: 7, dy: 7))
