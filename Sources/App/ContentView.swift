@@ -24,6 +24,9 @@ struct ContentView: View {
     /// 画中画是否已启动（M1）
     @State private var pipRunning = false
 
+    /// 调试日志文本（M1 黑屏排查用）
+    @State private var logText = ""
+
     var body: some View {
         NavigationStack {
             List {
@@ -70,6 +73,22 @@ struct ContentView: View {
                     }
                 }
 
+                Section("调试日志（M1）") {
+                    if logText.isEmpty {
+                        Text("暂无日志，点「开启悬浮窗」后回来点「刷新日志」。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(logText)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    Button("刷新日志") {
+                        refreshLog()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Section("证书状态") {
                     InfoRow(title: "到期时间", value: expiryText)
                     InfoRow(title: "剩余时长", value: remainingText)
@@ -86,7 +105,16 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("悬浮行情")
+            .onAppear {
+                refreshLog()
+            }
         }
+    }
+
+    // MARK: - 调试
+
+    private func refreshLog() {
+        logText = LogCollector.shared.all.reversed().joined(separator: "\n")
     }
 
     // MARK: - 计算属性

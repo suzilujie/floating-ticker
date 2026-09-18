@@ -10,11 +10,9 @@ import UIKit
 /// 投喂给 AVSampleBufferDisplayLayer，再由 AVPictureInPictureController
 /// 以悬浮窗形式展示。
 ///
-/// 时间基说明（重要，曾导致黑屏）：
-/// 图层默认时间基从 0 开始、1 倍速推进。若帧的 PTS 使用主机时钟
-/// （开机以来的秒数，数值极大），帧会被判定为「远在未来」而永不显示，
-/// 表现为黑屏 + 播放器控件。因此本类使用从 0 开始的相对 PTS，
-/// 每帧按帧间隔递增；每次 start() 重建显示层并重置 PTS，避免残留状态。
+/// 时间基（曾导致黑屏，本轮显式绑定）：
+/// 显式创建 controlTimebase 并绑定主机时钟，帧 PTS 同样取主机时钟，
+/// 二者严格对齐，确保帧到达即显示。
 final class PiPController: NSObject {
 
     static let shared = PiPController()
@@ -24,10 +22,8 @@ final class PiPController: NSObject {
     private var containerView: UIView?
     private let framePump = FramePump()
 
-    /// 下一帧的演示时间戳（相对时间，从 0 开始）
-    private var nextPTS = CMTime.zero
-    /// 帧间隔（与帧泵的定时间隔保持一致）
-    private let frameInterval = CMTime(seconds: 1.0, preferredTimescale: 600)
+    /// 已投喂的帧数（用于日志节流）
+    private var frameCount = 0
 
     private(set) var isActive = false
 
@@ -42,23 +38,27 @@ final class PiPController: NSObject {
 
     func start() {
         guard !isActive else { return }
+        LogCollector.shared.append("start: begin")
 
         // 音频会话：PiP 在后台存活并持续刷新的关键前提
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .moviePlayback, options: [])
         try? session.setActive(true)
+        LogCollector.shared.append("start: audio session .playback")
 
         // 显示层必须挂在窗口视图层级中，PiP 才能启动
         attachDisplayLayerIfNeeded()
 
-        // 每次启动都创建新的显示层：避免上次会话残留的时间基导致新帧被丢弃
+        // 每次启动都创建新的显示层，并显式绑定主机时钟时间基
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
         layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        layer.controlTimebase = Self.makeControlTimebase()
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
+        LogCollector.shared.append("start: layer created + controlTimebase set")
 
-        nextPTS = .zero
+        frameCount = 0
 
         let controller = AVPictureInPictureController(
             contentSource: AVPictureInPictureController.ContentSource(
@@ -72,6 +72,7 @@ final class PiPController: NSObject {
         framePump.start()
         controller.startPictureInPicture()
         isActive = true
+        LogCollector.shared.append("start: framePump + startPictureInPicture")
     }
 
     func stop() {
@@ -81,25 +82,49 @@ final class PiPController: NSObject {
         displayLayer?.removeFromSuperlayer()
         displayLayer = nil
         isActive = false
+        LogCollector.shared.append("stop: done")
+    }
+
+    // MARK: - 时间基
+
+    private static func makeControlTimebase() -> CMTimebase {
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock()
+        )
     }
 
     // MARK: - 帧投喂
 
     private func enqueue(_ pixelBuffer: CVPixelBuffer) {
-        guard let layer = displayLayer else { return }
+        guard let layer = displayLayer else {
+            LogCollector.shared.append("enqueue: layer is nil")
+            return
+        }
+        frameCount += 1
 
-        let pts = nextPTS
-        nextPTS = CMTimeAdd(nextPTS, frameInterval)
-
+        let pts = CMClockGetTime(CMClockGetHostTimeClock())
         guard let sampleBuffer = SampleBufferFactory.makeSampleBuffer(
             from: pixelBuffer,
             presentationTime: pts
-        ) else { return }
+        ) else {
+            if frameCount <= 3 {
+                LogCollector.shared.append("enqueue #\(frameCount): makeSampleBuffer FAILED")
+            }
+            return
+        }
 
         if layer.status == .failed {
             layer.flush()
+            LogCollector.shared.append("enqueue #\(frameCount): status failed -> flush")
         }
         layer.enqueue(sampleBuffer)
+
+        if frameCount <= 3 {
+            LogCollector.shared.append("enqueue #\(frameCount): ok status=\(layer.status)")
+        } else if frameCount == 10 {
+            LogCollector.shared.append("enqueue: 已投喂 10 帧")
+        }
     }
 
     // MARK: - 层级挂载
@@ -111,13 +136,17 @@ final class PiPController: NSObject {
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
             .first(where: { $0.isKeyWindow })
-        guard let window = window else { return }
+        guard let window = window else {
+            LogCollector.shared.append("attach: no key window")
+            return
+        }
 
         // 1x1 容器视图仅用于让显示层进入可见层级，视觉上不可见
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         view.backgroundColor = .clear
         window.addSubview(view)
         containerView = view
+        LogCollector.shared.append("attach: container view added to window")
     }
 }
 
@@ -128,7 +157,9 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
-    ) {}
+    ) {
+        LogCollector.shared.append("playback: setPlaying \(playing)")
+    }
 
     func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
@@ -146,7 +177,9 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         didTransitionToRenderSize newRenderSize: CMVideoDimensions
-    ) {}
+    ) {
+        LogCollector.shared.append("pip: renderSize \(newRenderSize.width)x\(newRenderSize.height)")
+    }
 
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
@@ -165,6 +198,7 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         isActive = true
+        LogCollector.shared.append("pip: didStart")
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(
@@ -172,6 +206,7 @@ extension PiPController: AVPictureInPictureControllerDelegate {
     ) {
         framePump.stop()
         isActive = false
+        LogCollector.shared.append("pip: didStop")
     }
 
     func pictureInPictureController(

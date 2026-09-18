@@ -136,4 +136,34 @@
   推送 → CI 构建 → 下载新 ipa → Sideloadly 覆盖安装 →
   开启悬浮窗验证：应显示「BTC/USDT 现货 · 76,000.0 · +0.71% · 右上角时钟每秒跳动」。
 
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段五：黑屏仍未解决，加日志 + 权威时间基
+--------------------------------------------------------------------------------
+
+■ 现象
+  相对时间戳方案侧载后仍黑屏。至此两种时间戳（主机时钟 / 相对 0 起）均黑屏，
+  说明时间戳可能不是（唯一）根因，需停止盲改、以日志定位。
+
+■ 本轮改动（诊断优先）
+  1) 新增 Sources/Debug/LogCollector.swift：环形日志，应用内展示
+  2) PiPController.swift 重写：
+     - 显式创建 controlTimebase 并绑定主机时钟（CMTimebaseCreateWithSourceClock），
+       帧 PTS 取主机时钟，二者严格对齐（权威做法）
+     - 全程埋日志：start 各步骤、enqueue 成败与帧计数、layer.status、
+       attach 结果、pip didStart/didStop、renderSize 回调
+  3) TickerFrameRenderer.swift：pixelBuffer / CGContext 创建失败时记日志
+  4) ContentView.swift：新增「调试日志（M1）」区块 + 刷新按钮
+
+■ 目的
+  若本轮仍黑屏，用户只需截图应用内日志，即可看到帧卡在哪一步：
+  - 无 "enqueue" 日志 → 帧泵/渲染问题
+  - "makeSampleBuffer FAILED" → 封装问题
+  - "enqueue ok" 但黑屏 → 时间基/图层显示问题
+  - "render: pixelBuffer/CGContext 创建失败" → 渲染问题
+
+■ 潜在风险
+  R15 若 CMTimebaseCreateWithSourceClock 在 Xcode16.4 下签名有差异导致编译失败，
+      按 CI 报错修正即可（预计无此问题）。
+  R17 若时间基并非根因，日志将直接揭示真正卡点，本轮是一次"确定性诊断"。
+
 ================================================================================

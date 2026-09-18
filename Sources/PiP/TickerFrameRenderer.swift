@@ -14,7 +14,10 @@ enum TickerFrameRenderer {
 
     /// 渲染一帧。
     static func render(now: Date) -> CVPixelBuffer? {
-        guard let pixelBuffer = makePixelBuffer(size: frameSize) else { return nil }
+        guard let pixelBuffer = makePixelBuffer(size: frameSize) else {
+            LogCollector.shared.append("render: pixelBuffer 创建失败")
+            return nil
+        }
 
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
@@ -28,7 +31,10 @@ enum TickerFrameRenderer {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                 | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else { return nil }
+        ) else {
+            LogCollector.shared.append("render: CGContext 创建失败")
+            return nil
+        }
 
         draw(context: context, now: now)
         return pixelBuffer
