@@ -418,6 +418,10 @@ AVPictureInPictureController → 系统悬浮窗</code></pre>
 <tr><td>数字防抖</td><td>使用等宽数字（monospaced digits）</td><td>价格跳动时不产生布局抖动</td></tr>
 <tr><td>省电</td><td>价格未变化时降到 1 fps</td><td>帧泵是持续耗电点</td></tr>
 <tr><td>后台模式</td><td><code>Info.plist</code> 声明 <code>UIBackgroundModes: audio</code></td><td>PiP 会话后台存活</td></tr>
+<tr><td><b>像素缓冲</b></td><td>必须由 <b>IOSurface 支撑</b>（<code>kCVPixelBufferIOSurfacePropertiesKey</code>）</td><td>图层走硬件合成管线；缺少该属性时帧能入队、状态显示 <code>.rendering</code>，却<b>永远全黑</b>——本项目实测踩过此坑（第 13 章）</td></tr>
+<tr><td><b>时间基</b></td><td>显式创建并设置 <code>controlTimebase</code>，帧 PTS 取该时间基的当前时间</td><td>图层默认<b>没有</b>时间基（实测为 <code>nil</code>），帧无法判定显示时刻。创建接口为 <code>CMTimebaseCreateWithSourceClock(allocator:sourceClock:timebaseOut:)</code>（输出参数 + OSStatus 返回）</td></tr>
+<tr><td><b>宿主容器</b></td><td>容器视图保持 <b>1×1</b>，显示层尺寸用画面尺寸</td><td>实测换成可见大容器后 <code>startPictureInPicture()</code> 会<b>静默失败</b>（无任何回调）</td></tr>
+<tr><td>立即显示</td><td>样本缓冲带 <code>kCMSampleAttachmentKey_DisplayImmediately</code></td><td>直播式内容需强制立即出画，不等时间戳</td></tr>
 <tr><td>播放控制</td><td>sample buffer 模式下系统会禁用快进/快退控制</td><td>与"伪直播流"设计方向一致，无需额外处理；目标系统 iOS 26 下该组合仍为 Apple 官方支持的内容源</td></tr>
 </tbody>
 </table>
@@ -590,8 +594,8 @@ jobs:
 <table>
 <thead><tr><th>阶段</th><th>内容</th><th>验收标准</th><th>风险等级</th></tr></thead>
 <tbody>
-<tr><td><b>M0</b></td><td>仓库 + CI + 侧载链路打通</td><td>在<b>测试机 iPhone 17</b> 上跑起 Hello World App（CI 构建 → 侧载 → 启动）；通过后再装到主力机</td><td class="no">高（闸门）</td></tr>
-<tr><td><b>M1</b></td><td>PiP 骨架（静态画面）</td><td>在测试机上悬浮窗出现在桌面，可拖动、可关闭、可还原</td><td class="no">高（闸门）</td></tr>
+<tr><td><b>M0</b></td><td>仓库 + CI + 侧载链路打通</td><td class="ok">✅ 2026-09-18 通过：测试机 iPhone 17 上完成 CI 构建 → 侧载 → 启动 全链路</td><td class="ok">闸门已通过</td></tr>
+<tr><td><b>M1</b></td><td>PiP 骨架（静态画面）</td><td class="ok">✅ 2026-09-18 通过：悬浮窗出现在桌面并正确渲染行情画面（占位数据），时钟逐秒跳动。<b>同时确认免费账号下 PiP 可用（风险 R2 解除）</b></td><td class="ok">闸门已通过</td></tr>
 <tr><td><b>M2</b></td><td>行情接入</td><td>App 内实时显示 BTC 价格，含断线重连</td><td class="warn">中</td></tr>
 <tr><td><b>M3</b></td><td>行情画进 PiP</td><td>悬浮窗实时跳价，1Hz 刷新无卡顿</td><td class="warn">中</td></tr>
 <tr><td><b>M4</b></td><td>容错与打磨</td><td>多源自动切换生效；省电策略；配色与尺寸定稿</td><td>低</td></tr>

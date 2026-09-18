@@ -321,4 +321,52 @@
   - 若已显示 → M1 通关，进入 M2（接入真实行情）
   - 若仍黑屏 → 问题完全锁定在 PiP 配置侧（图层侧已排除），范围极小
 
+--------------------------------------------------------------------------------
+[2026-09-18] 阶段十：M1 通关（画中画悬浮行情窗跑通）
+--------------------------------------------------------------------------------
+
+■ 成果
+  提交 4e258e5 侧载到测试机 iPhone 17 后，返回桌面可看到系统级悬浮窗，
+  完整显示占位行情内容：标题「BTC / USDT 现货」、白色大号价格「76,000.0」、
+  绿色「+0.71%」、右上角逐秒跳动的时钟。可拖动、可置顶、持续刷新。
+
+  在"免费 Apple ID + 无 Mac 本地环境"这一约束下，iOS 真·悬浮行情窗
+  全链路验证通过，风险闸门 R2（免费账号能否用 PiP）正式解除。
+
+■ 最终可用配置（关键，后续不得随意改动）
+  1) 像素缓冲必须由 IOSurface 支撑：CVPixelBuffer 创建时带
+     kCVPixelBufferIOSurfacePropertiesKey。缺失时帧能成功入队、图层状态
+     显示 .rendering、renderSize 正常，但画面永远全黑。
+  2) 时间基必须显式创建并设置：图层默认 controlTimebase == nil（实测），
+     此时帧无法判定显示时刻。创建接口签名为
+     CMTimebaseCreateWithSourceClock(allocator:sourceClock:timebaseOut:)，
+     通过输出参数返回时间基，函数返回 OSStatus。帧 PTS 取该时间基当前时间。
+  3) 宿主容器保持 1x1：实测换成 320x100 可见容器后，
+     startPictureInPicture() 会静默失败（willStart/failedToStart 均无回调）。
+  4) 帧带 kCMSampleAttachmentKey_DisplayImmediately 附件（直播式内容立即出画）。
+  5) AVAudioSession 设为 .playback 并 setActive(true)。
+  6) 图层尺寸 640x200（宽扁条），videoGravity = .resizeAspect。
+
+■ 本轮走过的弯路与教训（重要）
+  1) 因果倒置两次：
+     第一次判断"可见容器导致黑屏"，实际是缺 IOSurface；
+     第二次判断"可见容器是渲染的必要条件"，实际它多余且会破坏 PiP 启动。
+     根源是多变量同时改动，把"A+B 一起改好了"错记成"A 是关键"。
+     教训：一次只改一个变量。
+  2) 设备侧状态会干扰对照：上一轮曾把"PiP 启动失败"归因于容器，
+     后来发现同一版本在全新安装后能正常启动，说明旧会话残留也是变量。
+  3) 凭记忆写 Apple C 接口连错三次（CMTimebase 创建）：其真实形态是
+     "输出参数 + 返回状态码"，与常见的"直接返回对象"不同。
+     教训：C 接口在 Swift 中的形态必须查文档或由编译器确认。
+
+■ 已建立的诊断手段（后续复用）
+  LogCollector + 应用内日志面板；首像素 BGRA 采样（判断内容是否写入）；
+  图层 status / isReadyForMoreMediaData / bounds 记录；
+  PiP willStart / didStart / failedToStart 全回调覆盖；
+  构建指纹（BuildInfo.commit）用于确认设备上安装的版本。
+
+■ 下一步
+  M2：接入真实行情（Binance 公共数据域 WebSocket，已在 PC 侧实测 60 秒零断流），
+      并把渲染器中的占位数据替换为真实价格。
+
 ================================================================================

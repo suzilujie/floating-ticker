@@ -308,6 +308,75 @@ li{margin:5px 0}
 </tbody>
 </table>
 
+<h2 id="c-pitfall">五、实测踩坑与经验（Pitfalls &amp; Lessons）</h2>
+
+<div class="card">
+本节概念全部来自 M1 阶段真实调试过程，是"日志与状态全部正常、画面却全黑/功能却静默失败"这类问题的根因记录，
+价值高于任何文档抄写。后续改动 PiP 相关代码时，必须先读本节。
+</div>
+
+<h3 id="c-iosurface">IOSurface 支撑 (IOSurface-backed Pixel Buffer)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>创建 <code>CVPixelBuffer</code> 时附带 <code>kCVPixelBufferIOSurfacePropertiesKey</code>，使缓冲由 <b>IOSurface</b>（跨进程共享的图形内存表面）支撑。</td></tr>
+<tr><th>产生背景</th><td><code>AVSampleBufferDisplayLayer</code> 走<b>硬件合成管线</b>，帧缓冲需为 IOSurface 支撑。缺少该属性时，帧能成功入队、图层 <code>status</code> 显示 <code>.rendering</code>、<code>renderSize</code> 回调正常，但<b>画面永远纯黑</b>。</td></tr>
+<tr><th>现象特征</th><td>"所有诊断指标都正常、唯独屏幕全黑"。本项目为此连续排查了 6 轮 CI 迭代才定位。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>为必填属性</td></tr>
+<tr><th>关联概念</th><td>帧源层、图层时间基、首像素诊断</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-layertimebase">图层时间基 (Layer Control Timebase)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>驱动 <code>AVSampleBufferDisplayLayer</code> 决定"某帧何时显示"的时间基准对象 <code>CMTimebase</code>，通过 <code>controlTimebase</code> 属性设置。</td></tr>
+<tr><th>产生背景</th><td>实测发现图层的 <code>controlTimebase</code> 默认是 <b>nil</b>（并非文档暗示的自动创建）。没有时间基准时，帧无法判定显示时刻，全部滞留不显示。</td></tr>
+<tr><th>API 陷阱</th><td><code>CMTimebaseCreateWithSourceClock(allocator:sourceClock:timebaseOut:)</code> 的形态是"<b>输出参数 + 返回 OSStatus</b>"，而非常见的"直接返回对象"。凭记忆书写连续编译失败三次。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>：启动时显式创建并设 rate=1.0，帧 PTS 取该时间基当前时间</td></tr>
+<tr><th>关联概念</th><td>伪直播流、IOSurface 支撑</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-displayimmediately">立即显示附件 (DisplayImmediately Attachment)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>样本缓冲上的 attachment：<code>kCMSampleAttachmentKey_DisplayImmediately</code>，含义为"这一帧立即显示，不要等待时间戳到期"。</td></tr>
+<tr><th>产生背景</th><td>直播式内容的 PTS 与系统时钟基准不一定严格对齐，缺少该附件时帧可能被搁置。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
+<tr><th>关联概念</th><td>图层时间基、帧源层</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-hostcontainer">宿主容器约束 (Host Container Constraint)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>承载显示层的容器视图必须保持 <b>1×1 尺寸</b>，图层自身尺寸取画面尺寸（640×200）。</td></tr>
+<tr><th>产生背景</th><td>实测：把容器换成 320×100 的可见视图后，<code>startPictureInPicture()</code> 会<b>静默失败</b>——<code>willStart</code>、<code>didStart</code>、<code>failedToStart</code> 三个回调一个都不触发，而 <code>isPictureInPicturePossible</code> 却返回 <code>true</code>。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已确认</span>（两轮独立对照验证）</td></tr>
+<tr><th>关联概念</th><td>画中画悬浮窗、IOSurface 支撑</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-buildfingerprint">构建指纹 (Build Fingerprint)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>CI 构建时把 commit SHA 与构建时间写入源码常量，App 界面直接显示，用于确认设备上安装的究竟是哪一版。</td></tr>
+<tr><th>产生背景</th><td>调试期间曾因重复安装旧 ipa，导致新修复未被验证、白跑一轮排查。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>（界面「构建提交」一行）</td></tr>
+<tr><th>关联概念</th><td>无 Mac 开发链路、侧载</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-onevariable">单变量对照原则 (One-variable-at-a-time)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>排查问题时每次只改动一个变量，否则无法判定哪个改动真正起作用。</td></tr>
+<tr><th>产生背景</th><td>M1 调试中曾同时改动"容器尺寸 + 像素缓冲属性"，结果把"A+B 一起改好了"错记成"A 是关键"，导致后续基于错误结论连锁走了两条弯路（因果倒置两次）。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已确立</span>为项目排查纪律</td></tr>
+<tr><th>关联概念</th><td>构建指纹、无 Mac 开发链路（迭代成本高，更需纪律）</td></tr>
+</tbody>
+</table>
+
 </article>
 </main>
 
@@ -338,6 +407,13 @@ li{margin:5px 0}
 <a href="#c-monospaced">等宽数字防抖</a>
 <a href="#c-livefake">伪直播流</a>
 <a href="#c-keepalive">会话保活</a>
+<a href="#c-pitfall">五、实测踩坑与经验</a>
+<a href="#c-iosurface">IOSurface 支撑</a>
+<a href="#c-layertimebase">图层时间基</a>
+<a href="#c-displayimmediately">立即显示附件</a>
+<a href="#c-hostcontainer">宿主容器约束</a>
+<a href="#c-buildfingerprint">构建指纹</a>
+<a href="#c-onevariable">单变量对照原则</a>
 </aside>
 
 <script>
