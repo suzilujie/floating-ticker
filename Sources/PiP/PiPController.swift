@@ -35,6 +35,16 @@ final class PiPController: NSObject, ObservableObject {
     /// 已投喂的帧数（用于日志节流）
     private var frameCount = 0
 
+    /// 用户是否点了浮窗「还原到 App」（区别于主动关闭浮窗）。
+    ///
+    /// iOS 只在「用户点浮窗回 App」这条路径上回调
+    /// restoreUserInterfaceForPictureInPictureStop；点 × / 滑走关闭则不会。
+    /// 据此区分"只是想看看 App"与"真的想关掉浮窗"。
+    private var restoreRequested = false
+
+    /// 本次启动是否真的收到了 didStart（用于识别"启动请求被系统静默忽略"）
+    private var didStartFired = false
+
     /// 画中画是否处于活动状态（对外可观察，界面据此显示状态）
     @Published private(set) var isActive = false
 
@@ -103,6 +113,7 @@ final class PiPController: NSObject, ObservableObject {
 
         framePump.start()
         isActive = true
+        didStartFired = false
         LogCollector.shared.append("start: framePump started, 准备启动 PiP")
         attemptStartPiP(retry: 4)
     }
@@ -115,12 +126,23 @@ final class PiPController: NSObject, ObservableObject {
         guard let controller = pipController else { return }
         guard retry > 0 else {
             LogCollector.shared.append("start: 重试耗尽，放弃启动 PiP")
+            isActive = false   // 状态必须如实反映"没起来"，否则界面会谎报已开启
             return
         }
 
         if controller.isPictureInPicturePossible {
             LogCollector.shared.append("start: pipPossible=true，调用 startPictureInPicture")
             controller.startPictureInPicture()
+
+            // 看门狗：iOS 可能"静默忽略"启动请求（不报错、不回调）。
+            // 3 秒内没等到 didStart 就判定为未开启，并把结论写进日志 ——
+            // 这是判断"自动重启浮窗"能否在 iOS 26 上成立的唯一依据。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self = self else { return }
+                guard self.isActive, !self.didStartFired else { return }
+                self.isActive = false
+                LogCollector.shared.append("pip: 启动请求未被系统受理（3 秒内无 didStart）")
+            }
         } else {
             LogCollector.shared.append("start: pipPossible=false，0.5s 后重试（剩余 \(retry - 1)）")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -312,6 +334,7 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         isActive = true
+        didStartFired = true
         LogCollector.shared.append("pip: didStart")
     }
 
@@ -320,16 +343,38 @@ extension PiPController: AVPictureInPictureControllerDelegate {
     ) {
         framePump.stop()
         isActive = false
+        didStartFired = false
         // 必须移除：否则图层会以原始尺寸贴在窗口左上角，盖住 App 界面（见 removeDisplayLayer）
         removeDisplayLayer()
-        LogCollector.shared.append("pip: didStop，显示层已移除")
+
+        // 区分两种结束：
+        //   ① 用户点浮窗「还原到 App」→ 只是想看看 App，不是要关浮窗 → 自动重启
+        //   ② 用户点 × / 滑走关闭       → 尊重意图，不重启，由界面提示并提供一键重开
+        let shouldAutoRestart = restoreRequested
+        restoreRequested = false
+
+        guard shouldAutoRestart else {
+            LogCollector.shared.append("pip: didStop（用户主动关闭浮窗）")
+            return
+        }
+
+        LogCollector.shared.append("pip: didStop（「还原到 App」而非关闭），0.4s 后自动重启浮窗")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            // 这 0.4 秒内用户若已手动重开，就不要重复启动
+            guard !self.isActive else { return }
+            self.start()
+        }
     }
 
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
     ) {
-        // 用户点击「还原」，回到 App 前台
+        // 用户点击浮窗「还原」回 App 前台。
+        // 注意：这个回调**只在"还原到 App"时触发**，点 × 关闭不会触发 ——
+        // 我们据此判断这次 PiP 结束并非用户想关掉浮窗（见 didStop 中的自动重启）。
+        restoreRequested = true
         completionHandler(true)
     }
 }
