@@ -57,12 +57,14 @@ final class PiPController: NSObject {
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
 
-        // 确保图层时间基处于运行状态，并记录其当前时间（供后续 PTS 使用）
-        if let timebase = layer.controlTimebase {
+        // 关键修复：图层没有默认时间基（日志已证实为纯黑画面根因），必须显式创建并设置。
+        // 没有时间基准时，图层无法判定任何一帧何时显示，于是永不渲染。
+        if let timebase = Self.makeControlTimebase() {
             CMTimebaseSetRate(timebase, rate: 1.0)
-            LogCollector.shared.append("start: timebase rate=1.0 t=\(CMTimebaseGetTime(timebase).seconds)")
+            layer.controlTimebase = timebase
+            LogCollector.shared.append("start: controlTimebase set rate=1.0")
         } else {
-            LogCollector.shared.append("start: 图层无默认时间基")
+            LogCollector.shared.append("start: controlTimebase 创建失败")
         }
 
         frameCount = 0
@@ -90,6 +92,20 @@ final class PiPController: NSObject {
         displayLayer = nil
         isActive = false
         LogCollector.shared.append("stop: done")
+    }
+
+    // MARK: - 时间基
+
+    /// 创建以主机时钟为源的时间基。
+    ///
+    /// 显式声明为可选类型再赋值：无论 CMTimebaseCreateWithSourceClock 在 Swift 中
+    /// 被导入为非可选还是可选返回值，此写法都能通过编译。
+    private static func makeControlTimebase() -> CMTimebase? {
+        let timebase: CMTimebase? = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock()
+        )
+        return timebase
     }
 
     // MARK: - 帧投喂
