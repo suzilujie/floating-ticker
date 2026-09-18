@@ -12,6 +12,9 @@ enum TickerFrameRenderer {
     /// 悬浮窗画面尺寸（宽扁条，比例 16:5）
     static let frameSize = CGSize(width: 640, height: 200)
 
+    /// 首像素诊断只输出一次
+    private static var didLogFirstPixel = false
+
     /// 渲染一帧。
     static func render(now: Date) -> CVPixelBuffer? {
         guard let pixelBuffer = makePixelBuffer(size: frameSize) else {
@@ -37,6 +40,17 @@ enum TickerFrameRenderer {
         }
 
         draw(context: context, now: now)
+
+        // 诊断：读取首像素的 BGRA，确认内容确实写入了缓冲
+        // （若为 0,0,0,0 则说明绘制没生效；若为深灰则说明内容正常，问题在显示端）
+        if !Self.didLogFirstPixel, let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            let bytes = base.assumingMemoryBound(to: UInt8.self)
+            LogCollector.shared.append(
+                "render: first pixel BGRA=(\(bytes[0]),\(bytes[1]),\(bytes[2]),\(bytes[3]))"
+            )
+            Self.didLogFirstPixel = true
+        }
+
         return pixelBuffer
     }
 

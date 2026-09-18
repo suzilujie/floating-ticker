@@ -52,7 +52,7 @@ final class PiPController: NSObject {
         // 每次启动都创建新的显示层，并显式绑定主机时钟时间基
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        layer.frame = containerView?.bounds ?? CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
         LogCollector.shared.append("start: layer created")
@@ -145,7 +145,9 @@ final class PiPController: NSObject {
         layer.enqueue(sampleBuffer)
 
         if frameCount <= 3 {
-            LogCollector.shared.append("enqueue #\(frameCount): ok pts=\(pts.seconds) status=\(layer.status)")
+            LogCollector.shared.append(
+                "enqueue #\(frameCount): ok pts=\(pts.seconds) status=\(layer.status) ready=\(layer.isReadyForMoreMediaData) bounds=\(Int(layer.bounds.width))x\(Int(layer.bounds.height))"
+            )
         } else if frameCount == 10 {
             LogCollector.shared.append("enqueue: 已投喂 10 帧")
         }
@@ -165,12 +167,26 @@ final class PiPController: NSObject {
             return
         }
 
-        // 1x1 容器视图仅用于让显示层进入可见层级，视觉上不可见
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        // 容器视图必须有真实尺寸且处于可见状态：
+        // 早期使用 1x1 视图导致显示层可能被判为无可渲染区域（画面纯黑）。
+        // 这里用与画面同比例的 320x100，放在窗口底部作为可见预览。
+        let previewSize = CGSize(
+            width: 320,
+            height: 320 * TickerFrameRenderer.frameSize.height / TickerFrameRenderer.frameSize.width
+        )
+        let view = UIView(frame: CGRect(
+            x: 8,
+            y: window.bounds.height - previewSize.height - 40,
+            width: previewSize.width,
+            height: previewSize.height
+        ))
         view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
         window.addSubview(view)
         containerView = view
-        LogCollector.shared.append("attach: container view added to window")
+        LogCollector.shared.append(
+            "attach: container \(Int(previewSize.width))x\(Int(previewSize.height)) visible=\(!view.isHidden) alpha=\(view.alpha)"
+        )
     }
 }
 
