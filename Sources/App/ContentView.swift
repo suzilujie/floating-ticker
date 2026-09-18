@@ -71,7 +71,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text("一键完成：连接行情（Gate 永续）→ 等首帧到达 → 自动开启悬浮窗。随后按 Home 键回桌面即可看到浮窗。")
+                    Text("一键完成：开启悬浮窗 → 连接行情（Gate 永续）。浮窗最初一两帧显示 -- 属正常，约 1 秒后出现价格。随后按 Home 键回桌面查看。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -159,32 +159,19 @@ struct ContentView: View {
 
     // MARK: - 一键启动 / 停止
 
-    /// 启动链：连行情 → 等首帧 → 开浮窗。
-    /// 按钮点击本身提供了用户手势，可规避"程序化启动画中画被系统拒绝"的风险。
+    /// 启动链：开浮窗 → 连行情。
+    ///
+    /// 关键顺序（实测教训）：必须**在同一次用户交互（按钮点击）内同步调用**
+    /// PiPController.start()。此前为等待首帧而把它放进异步回调（延迟约 1 秒），
+    /// 脱离了手势上下文，系统会直接忽略该次启动请求（无任何回调）。
+    /// 代价：浮窗最初一两帧显示 "--"，约 1 秒后出现真实价格。
     private func startAll() {
         LogCollector.shared.append("app: 启动链开始")
+        PiPController.shared.start()
+        pipRunning = true
+
         market.start()
         marketRunning = true
-        waitForFirstTickThenStartPiP(attemptsLeft: 6)
-    }
-
-    /// 等首帧到达再开浮窗（最多约 3 秒），避免浮窗先显示空值
-    private func waitForFirstTickThenStartPiP(attemptsLeft: Int) {
-        if market.tickCount > 0 {
-            LogCollector.shared.append("app: 行情已就绪（tick=\(market.tickCount)），开启浮窗")
-            PiPController.shared.start()
-            pipRunning = true
-            return
-        }
-        guard attemptsLeft > 0 else {
-            LogCollector.shared.append("app: 等待行情超时，仍尝试开启浮窗")
-            PiPController.shared.start()
-            pipRunning = true
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            waitForFirstTickThenStartPiP(attemptsLeft: attemptsLeft - 1)
-        }
     }
 
     private func stopAll() {
