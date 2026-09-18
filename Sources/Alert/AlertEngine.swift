@@ -35,6 +35,15 @@ final class AlertEngine: ObservableObject {
         didSet {
             guard config != oldValue else { return }
             config.save()
+
+            // 触发参数一变就把状态机归零：否则用户刚改完目标价，却还要等上一轮冷却
+            // 走完（最长 5 分钟）才可能触发，对"改完想立刻验证"的用法极不友好。
+            if config.targetPrice != oldValue.targetPrice
+                || config.tolerance != oldValue.tolerance
+                || config.onlyDown != oldValue.onlyDown {
+                resetState()
+            }
+
             if !config.isEnabled, isAlerting {
                 stopAlert()
             }
@@ -182,6 +191,23 @@ final class AlertEngine: ObservableObject {
     func stopAlert() {
         guard isAlerting else { return }
         finish()
+    }
+
+    /// 把状态机归零（回到已武装、清空冷却与上一价），用于参数变更后立即恢复可触发状态。
+    ///
+    /// 注意 `lastPrice = nil` 的用意：方向判定必须从头开始，否则会拿"改动前的旧价格"
+    /// 去做跨带判断，产生误触发。副作用是——若改后的目标价正好落在当前价附近，
+    /// 下一次行情推送即触发，这恰好方便验证。
+    private func resetState() {
+        endTimer?.invalidate()
+        endTimer = nil
+        sound.stop()
+        isAlerting = false
+        isTest = false
+        cooldownEndsAt = nil
+        lastPrice = nil
+        phase = .armed
+        LogCollector.shared.append("alert: 触发参数变更，状态机重置为已武装")
     }
 
     /// 试听时长（秒）：够听清即可，不必像实盘那样响 20 秒
