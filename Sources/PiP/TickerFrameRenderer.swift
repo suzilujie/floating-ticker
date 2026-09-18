@@ -9,8 +9,27 @@ import UIKit
 /// 后续 M3 会把占位内容替换为真实行情数据。
 enum TickerFrameRenderer {
 
-    /// 悬浮窗画面尺寸（宽扁条，比例 16:5）
-    static let frameSize = CGSize(width: 640, height: 200)
+    /// 画面画布尺寸。
+    ///
+    /// 关键平台约束（真机实测确认）：PiP 窗口的**高度由系统定死**（小档约 96pt），
+    /// **宽度 = 窗口高度 × 画面宽高比**。没有任何公开 API 能设定窗口尺寸，
+    /// 用户侧的双指捏合缩放也不生效。因此「把浮窗改小」的唯一杠杆是**调小宽高比**：
+    ///
+    ///   640×200（3.2:1）→ 窗口约 307×96
+    ///   640×400（1.6:1）→ 窗口约 154×96（面积正好减半）
+    ///
+    /// 画布加高后，行情条仍按原设计绘制在 200 高的内容带内并垂直居中，
+    /// 上下多出的部分为底色留白。附带收益：系统的关闭按钮与画中画图标压在窗口
+    /// 四角，原先会盖住左上角的币对名，加留白后控件落进留白区，不再遮挡文字。
+    static let frameSize = CGSize(width: 640, height: 400)
+
+    /// 内容区高度（行情条本身的设计高度，不随画布高度变化）
+    private static let contentHeight: CGFloat = 200
+
+    /// 内容区在画布中的垂直偏移（使行情条在加高后的画布中居中）
+    private static var contentOffsetY: CGFloat {
+        (frameSize.height - contentHeight) / 2
+    }
 
     /// 首像素诊断只输出一次
     private static var didLogFirstPixel = false
@@ -92,9 +111,13 @@ enum TickerFrameRenderer {
         context.translateBy(x: 0, y: frameSize.height)
         context.scaleBy(x: 1, y: -1)
 
-        // 深色背景
+        // 深色背景（铺满整个画布，含上下留白）
         context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
         context.fill(CGRect(origin: .zero, size: frameSize))
+
+        // 内容区下移「留白的一半」，使其在加高后的画布中垂直居中。
+        // 注：上一行已把坐标系翻转为 UIKit 式（原点左上、+y 向下），故此处为下移。
+        context.translateBy(x: 0, y: contentOffsetY)
 
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }

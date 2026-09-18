@@ -243,6 +243,10 @@ li{margin:6px 0}
 <p>唯一合法途径是<b>画中画</b>：系统托管的悬浮视频窗口，可置顶于桌面与任意 App 之上。</p>
 </blockquote>
 <p>因此本项目本质是：<b>把行情数据渲染成"视频帧"，用 PiP 播放</b>。</p>
+<blockquote>
+<p><b>PiP 窗口的尺寸同样不受 App 控制。</b>系统固定了窗口的<b>高度</b>（小档约 96pt），宽度则等于「窗口高度 × 画面宽高比」。没有公开 API 能设定窗口尺寸，用户侧的双指捏合缩放实测亦不生效。</p>
+<p>唯一可用的杠杆是<b>画面宽高比</b>：想缩小浮窗就调小比例（代价是窗口形状趋"方"），想放大就调大比例。</p>
+</blockquote>
 
 <h2 id="decisions">2. 核心技术决策</h2>
 
@@ -468,7 +472,8 @@ AVPictureInPictureController → 系统悬浮窗</code></pre>
 <tr><td>会话保活</td><td><code>AVAudioSession</code> 设为 <code>.playback</code> 并 <code>setActive(true)</code></td><td>PiP 会话在后台存活、持续刷新价格的前提</td></tr>
 <tr><td>内容源</td><td><code>ContentSource(sampleBufferDisplayLayer:playbackDelegate:)</code></td><td>iOS 15+ 的自定义帧源接口</td></tr>
 <tr><td>伪装直播流</td><td>时间轴返回 <code>.positiveInfinity</code></td><td>隐藏进度条，只保留播放/关闭控件</td></tr>
-<tr><td>画面比例</td><td>由 <code>CVPixelBuffer</code> 尺寸决定（如 640×200）</td><td>还原"长条"悬浮条观感</td></tr>
+<tr><td>画面比例</td><td>由画布（<code>CVPixelBuffer</code>）尺寸决定，现取 <b>640×400（1.6:1）</b></td><td>比例是唯一能调整窗口大小的杠杆（见下一行）</td></tr>
+<tr><td><b>窗口尺寸</b></td><td><b>无法直接设定</b>。系统规则为：窗口<b>高度固定</b>（小档约 96pt），<b>宽度 = 高度 × 画面宽高比</b>。故做法是<b>加高画布、内容垂直居中、上下留底色</b>，让窗口整体缩小</td><td>无公开 API 可设置 PiP 窗口尺寸，真机实测捏合缩放不生效。实测数据：640×200（3.2:1）→ 窗口 307×96；640×400（1.6:1）→ 窗口 154×96（面积减半）。附带收益：系统控件（关闭、画中画图标）压在窗口四角，留白后不再遮挡币对名</td></tr>
 <tr><td>回到 App</td><td>实现 <code>restoreUserInterfaceForPictureInPictureStop</code></td><td>用户点击"还原"时正确切回前台</td></tr>
 <tr><td>数字防抖</td><td>使用等宽数字（monospaced digits）</td><td>价格跳动时不产生布局抖动</td></tr>
 <tr><td>省电</td><td>价格未变化时降到 1 fps</td><td>帧泵是持续耗电点</td></tr>
@@ -678,6 +683,7 @@ jobs:
 <tr><td>R9</td><td>7 天重签的持续工作量</td><td>高</td><td>低</td><td>只有主力机需要长期有效：先在测试机上跑通 M5（AltStore 自动续签）再应用到主力机；测试机证书过期可直接重建</td></tr>
 <tr><td>R10</td><td>免费账号设备注册名额被试验消耗</td><td>中</td><td class="warn">中</td><td>先用测试机完成全部链路验证，主力机名额只在稳定版本就绪后使用一次；若遇上限提示再评估付费账号</td></tr>
 <tr><td>R11</td><td>目标系统为 iOS 26，PiP 行为若与旧版存在差异</td><td>低</td><td class="warn">中</td><td>已核实该内容源组合仍为官方支持；M1 阶段在真机（iOS 26）优先验证</td></tr>
+<tr><td>R12</td><td>PiP 窗口尺寸不可控，浮窗过大遮挡视野</td><td class="ok">已解决</td><td>低</td><td>已用宽高比杠杆处理：3.2:1 → 1.6:1，窗口面积减半。若仍需调整，继续改比例即可（纯参数改动）</td></tr>
 </tbody>
 </table>
 
