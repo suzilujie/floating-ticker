@@ -9,15 +9,25 @@ import UIKit
 /// 职责：把帧泵产出的像素缓冲封装为 CMSampleBuffer，
 /// 投喂给 AVSampleBufferDisplayLayer，再由 AVPictureInPictureController
 /// 以悬浮窗形式展示。
+///
+/// 时间基说明（重要，曾导致黑屏）：
+/// 图层默认时间基从 0 开始、1 倍速推进。若帧的 PTS 使用主机时钟
+/// （开机以来的秒数，数值极大），帧会被判定为「远在未来」而永不显示，
+/// 表现为黑屏 + 播放器控件。因此本类使用从 0 开始的相对 PTS，
+/// 每帧按帧间隔递增；每次 start() 重建显示层并重置 PTS，避免残留状态。
 final class PiPController: NSObject {
 
     static let shared = PiPController()
 
-    private let displayLayer = AVSampleBufferDisplayLayer()
-    private let framePump = FramePump()
+    private var displayLayer: AVSampleBufferDisplayLayer?
     private var pipController: AVPictureInPictureController?
     private var containerView: UIView?
-    private let clock = CMClockGetHostTimeClock()
+    private let framePump = FramePump()
+
+    /// 下一帧的演示时间戳（相对时间，从 0 开始）
+    private var nextPTS = CMTime.zero
+    /// 帧间隔（与帧泵的定时间隔保持一致）
+    private let frameInterval = CMTime(seconds: 1.0, preferredTimescale: 600)
 
     private(set) var isActive = false
 
@@ -41,9 +51,18 @@ final class PiPController: NSObject {
         // 显示层必须挂在窗口视图层级中，PiP 才能启动
         attachDisplayLayerIfNeeded()
 
+        // 每次启动都创建新的显示层：避免上次会话残留的时间基导致新帧被丢弃
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
+        containerView?.layer.addSublayer(layer)
+        displayLayer = layer
+
+        nextPTS = .zero
+
         let controller = AVPictureInPictureController(
             contentSource: AVPictureInPictureController.ContentSource(
-                sampleBufferDisplayLayer: displayLayer,
+                sampleBufferDisplayLayer: layer,
                 playbackDelegate: self
             )
         )
@@ -59,23 +78,28 @@ final class PiPController: NSObject {
         guard isActive else { return }
         pipController?.stopPictureInPicture()
         framePump.stop()
+        displayLayer?.removeFromSuperlayer()
+        displayLayer = nil
         isActive = false
     }
 
     // MARK: - 帧投喂
 
     private func enqueue(_ pixelBuffer: CVPixelBuffer) {
-        // 用主机时钟做演示时间戳，保证单调递增
-        let now = CMClockGetTime(clock)
+        guard let layer = displayLayer else { return }
+
+        let pts = nextPTS
+        nextPTS = CMTimeAdd(nextPTS, frameInterval)
+
         guard let sampleBuffer = SampleBufferFactory.makeSampleBuffer(
             from: pixelBuffer,
-            presentationTime: now
+            presentationTime: pts
         ) else { return }
 
-        if displayLayer.status == .failed {
-            displayLayer.flush()
+        if layer.status == .failed {
+            layer.flush()
         }
-        displayLayer.enqueue(sampleBuffer)
+        layer.enqueue(sampleBuffer)
     }
 
     // MARK: - 层级挂载
@@ -92,12 +116,6 @@ final class PiPController: NSObject {
         // 1x1 容器视图仅用于让显示层进入可见层级，视觉上不可见
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         view.backgroundColor = .clear
-        displayLayer.frame = CGRect(
-            origin: .zero,
-            size: TickerFrameRenderer.frameSize
-        )
-        displayLayer.videoGravity = .resizeAspect
-        view.layer.addSublayer(displayLayer)
         window.addSubview(view)
         containerView = view
     }
