@@ -133,10 +133,33 @@ final class PiPController: NSObject, ObservableObject {
         guard isActive else { return }
         pipController?.stopPictureInPicture()
         framePump.stop()
-        displayLayer?.removeFromSuperlayer()
-        displayLayer = nil
+        removeDisplayLayer()
         isActive = false
         LogCollector.shared.append("stop: done")
+    }
+
+    /// 把显示层收回容器并移出视图层级。
+    ///
+    /// 为什么必须做（真机报障）：图层尺寸是画面尺寸（600×400pt），而宿主容器只有
+    /// 1×1 且未裁剪。PiP 活动期间画面由系统浮窗负责，图层不参与渲染；一旦 PiP 结束
+    /// （例如用户点浮窗「还原」回 App），图层会重新作为内嵌视图以原始尺寸渲染，
+    /// 表现就是**盖住 App 界面上半部分的一大块黑底**，且画面横向溢出屏幕。
+    ///
+    /// 处理顺序：先把图层收回容器尺寸（让系统的还原动画把画面收进角落），
+    /// 再延迟移除；捕获具体图层实例而非读 `displayLayer`，避免这 0.35 秒内
+    /// 用户重新开启 PiP 时误删新图层。
+    private func removeDisplayLayer() {
+        guard let layer = displayLayer else { return }
+        displayLayer = nil
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.frame = containerView?.bounds ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+        CATransaction.commit()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            layer.removeFromSuperlayer()
+        }
     }
 
     // MARK: - 时间基
@@ -219,6 +242,9 @@ final class PiPController: NSObject, ObservableObject {
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
+        // 第二道保险：图层尺寸远大于 1×1 容器，必须裁剪，
+        // 否则一旦图层被内嵌渲染就会溢出成一大块面包住 App 界面。
+        view.clipsToBounds = true
         window.addSubview(view)
         containerView = view
         LogCollector.shared.append("attach: container 1x1 added")
@@ -294,7 +320,9 @@ extension PiPController: AVPictureInPictureControllerDelegate {
     ) {
         framePump.stop()
         isActive = false
-        LogCollector.shared.append("pip: didStop")
+        // 必须移除：否则图层会以原始尺寸贴在窗口左上角，盖住 App 界面（见 removeDisplayLayer）
+        removeDisplayLayer()
+        LogCollector.shared.append("pip: didStop，显示层已移除")
     }
 
     func pictureInPictureController(

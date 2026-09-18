@@ -52,11 +52,21 @@ struct ContentView: View {
                     InfoRow(title: "悬浮窗", value: pip.isActive ? "已开启" : "未开启")
 
                     if AVPictureInPictureController.isPictureInPictureSupported() {
-                        Text(pip.isActive
-                             ? "返回桌面即可看到悬浮窗，窗内右上角时钟逐秒跳动。"
-                             : "若悬浮窗未自动出现，按 Home 键返回桌面时会自动转入。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        if pip.isActive {
+                            Text("返回桌面即可看到悬浮窗。浮窗是后台运行的唯一依据——关掉它，价格报警在后台即失效。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            // 点浮窗「还原」回 App、或手动关闭浮窗后，PiP 会话即结束。
+                            // 此时给出明确提示与一键重开入口，避免"以为在盯盘、其实已停摆"。
+                            Text("浮窗已关闭，价格报警在后台不再生效。")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+
+                            Button("重新开启浮窗") {
+                                PiPController.shared.start()
+                            }
+                        }
                     } else {
                         Text("本机不支持画中画，无法显示悬浮窗。")
                             .font(.footnote)
