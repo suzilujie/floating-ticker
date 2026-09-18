@@ -101,9 +101,9 @@ final class PiPController: NSObject {
     /// 显式声明为可选类型再赋值：无论 CMTimebaseCreateWithSourceClock 在 Swift 中
     /// 被导入为非可选还是可选返回值，此写法都能通过编译。
     private static func makeControlTimebase() -> CMTimebase? {
-        let timebase: CMTimebase? = CMTimebaseCreateWithSourceClock(
+        let timebase: CMTimebase? = CMTimebaseCreateWithMasterClock(
             allocator: kCFAllocatorDefault,
-            sourceClock: CMClockGetHostTimeClock()
+            masterClock: CMClockGetHostTimeClock()
         )
         return timebase
     }
