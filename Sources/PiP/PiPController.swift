@@ -79,9 +79,31 @@ final class PiPController: NSObject {
         pipController = controller
 
         framePump.start()
-        controller.startPictureInPicture()
         isActive = true
-        LogCollector.shared.append("start: framePump + startPictureInPicture")
+        LogCollector.shared.append("start: framePump started, 准备启动 PiP")
+        attemptStartPiP(retry: 4)
+    }
+
+    /// 尝试启动画中画。
+    ///
+    /// isPictureInPicturePossible 只有在内容真正就绪后才为 true，
+    /// 因此在同一时刻立刻调用可能失败；这里做有限重试。
+    private func attemptStartPiP(retry: Int) {
+        guard let controller = pipController else { return }
+        guard retry > 0 else {
+            LogCollector.shared.append("start: 重试耗尽，放弃启动 PiP")
+            return
+        }
+
+        if controller.isPictureInPicturePossible {
+            LogCollector.shared.append("start: pipPossible=true，调用 startPictureInPicture")
+            controller.startPictureInPicture()
+        } else {
+            LogCollector.shared.append("start: pipPossible=false，0.5s 后重试（剩余 \(retry - 1)）")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.attemptStartPiP(retry: retry - 1)
+            }
+        }
     }
 
     func stop() {
@@ -233,6 +255,19 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
 // MARK: - 画中画生命周期
 
 extension PiPController: AVPictureInPictureControllerDelegate {
+
+    func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        LogCollector.shared.append("pip: willStart")
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        LogCollector.shared.append("pip: 启动失败 error=\(error.localizedDescription)")
+    }
 
     func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
