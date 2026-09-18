@@ -181,9 +181,26 @@ final class AlertEngine: ObservableObject {
         }
     }
 
-    /// 立即试听一次报警（声音 + 闪烁）。用于验证链路，不影响实盘状态。
+    /// 测试报警：立即演练一次「判定 → 响铃 + 红闪」的完整链路。
+    ///
+    /// 与真实触发的唯一差别是**不进冷却**（可反复测）。
+    /// 判定仍走真实的 [`crossed(previous:current:)`]，只是喂给它一段构造走势：
+    ///   上一价 = 触发带外上方，当前价 = 目标价 —— 即"价格从上方跌到目标"。
+    /// 这样即便现价（约 76300）离目标（69000）还有 9.6%，也能立刻验证判定逻辑。
     func testFire() {
         guard !isAlerting else { return }
+        guard config.isEnabled else {
+            LogCollector.shared.append("alert: 测试未执行——报警当前为关闭状态")
+            return
+        }
+
+        let simulatedPrevious = config.upperBand + config.tolerance
+        guard crossed(previous: simulatedPrevious, current: config.targetPrice) else {
+            LogCollector.shared.append("alert: 测试未触发——模拟走势不满足当前方向判据")
+            return
+        }
+
+        LogCollector.shared.append("alert: 模拟触发（走真实判定路径，不进冷却）")
         fire(isTest: true)
     }
 
