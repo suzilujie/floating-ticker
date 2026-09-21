@@ -99,6 +99,9 @@ struct ContentView: View {
                 // 价格报警：目标价、容差、状态与试听
                 AlertSettingsView()
 
+                // 数据源可达性：一键探测所有源，直观看清此刻哪个源能用
+                SourceProbeView()
+
                 // 诊断信息：默认折叠，不干扰主界面
                 Section {
                     DisclosureGroup("诊断信息") {
