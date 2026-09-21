@@ -19,7 +19,13 @@ final class GateFuturesWebSocketSource: MarketDataSource {
 
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
+    private var heartbeatTimer: Timer?
     private var isStopped = false
+
+    /// 心跳间隔：协议级 ping 用于识破「半死连接」——
+    /// 锁屏 / 后台后 TCP 可能被中间设备静默掐断，此时 receive() 不会回调 error，
+    /// 客户端会一直傻等。定时 ping 一旦失败即可判定链路已断，交由上层自愈。
+    private static let heartbeatInterval: TimeInterval = 15
 
     func start() {
         isStopped = false
@@ -36,17 +42,42 @@ final class GateFuturesWebSocketSource: MarketDataSource {
         task.resume()
 
         sendSubscribe()
+        startHeartbeat()
         receiveLoop()
     }
 
     func stop() {
         isStopped = true
+        stopHeartbeat()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session?.invalidateAndCancel()
         session = nil
         onState?(.idle)
         LogCollector.shared.append("market[L1]: 已停止")
+    }
+
+    // MARK: - 心跳
+
+    /// 定时发协议级 ping（服务端回 pong）。失败即判定链路已断并上报 `.failed`，
+    /// 交由 TickerStore 的自愈闭环处理。
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
+            guard let self = self, !self.isStopped else { return }
+            self.task?.sendPing { [weak self] error in
+                guard let error = error else { return }
+                LogCollector.shared.append("market[L1]: 心跳失败 \(error.localizedDescription)")
+                DispatchQueue.main.async { self?.onState?(.failed("心跳失败")) }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
     }
 
     // MARK: - 发送

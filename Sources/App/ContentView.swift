@@ -21,6 +21,9 @@ struct ContentView: View {
     @ObservedObject private var pip = PiPController.shared
     @ObservedObject private var alert = AlertEngine.shared
 
+    /// 应用场景阶段：回到前台（含锁屏解锁）时用来触发一次数据新鲜度检查
+    @Environment(\.scenePhase) private var scenePhase
+
     /// 防止 onAppear 重复触发启动
     @State private var didStart = false
     @State private var logText = ""
@@ -116,6 +119,13 @@ struct ContentView: View {
         }
         .onAppear {
             startIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // 回到前台（含锁屏解锁）立即核对数据新鲜度：后台期间连接可能已被静默掐断，
+            // 这一步让用户一眼就看到最新价格，而不用干等看门狗的下一个周期。
+            if newPhase == .active {
+                market.checkFreshness()
+            }
         }
     }
 

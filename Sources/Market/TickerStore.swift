@@ -1,11 +1,28 @@
 import Combine
 import Foundation
+import Network
 
 /// 行情状态聚合：持有最新快照、当前数据源与连接状态，
-/// 并在主源失败时按层级降级（L1 → L2）。
+/// 并在主源失败时按层级降级（L1 → L2 → L3）。
 ///
-/// M2 阶段只做"能用 + 可观测"；完整的健康检查、回切与异构兜底（L3）
-/// 按设计文档 4.3 节在 M4 实现。
+/// **永续更新保障（本版重点）**：产品要求「只要 App 开着就必须一直更新行情，
+/// 除非网络真的断了或手机关机」。为此在原有「失败才降级」之上，补齐了完整的自愈闭环。
+///
+/// 要解决的根因（真机复现：锁屏回来后行情不再更新）：
+/// 锁屏 / 后台时 iOS 会静默掐断 TCP（NAT 超时），而客户端正阻塞在 `receive()`，
+/// 收不到任何 error —— 连接进入「半死」状态：不报失败，也永远收不到数据。
+/// 旧实现里看门狗只写一行日志「疑似中断」就没了，于是永久卡住。
+///
+/// 四层守卫：
+///   1) **数据停滞看门狗**：超过 `stallThreshold` 秒无任何推送即判定停滞，主动重建当前源；
+///      连续重建无效则切换下一层；**到底后回绕到链首**继续重试 —— 永不放弃。
+///   2) **网络状态监听**：网络由「不可达」恢复为「可达」时立即重建（断网恢复的关键路径）。
+///   3) **回到前台检查**：App 回到前台时立刻核对数据新鲜度，停滞则立即自愈。
+///   4) **连接级心跳**：由各数据源自身实现（见各 WS 源的 sendPing），
+///      用于把「半死连接」暴露成 `.failed` 回调，加速上面的自愈触发。
+///
+/// 线程约束：所有对外状态变更统一在主线程（行情源的回调在此处 `DispatchQueue.main.async`
+/// 归拢），故下游（界面、报警引擎）无需再处理线程问题。
 final class TickerStore: ObservableObject {
 
     static let shared = TickerStore()
@@ -39,6 +56,28 @@ final class TickerStore: ObservableObject {
     /// 否则源链重建后，迟到的探测结果会把已停用的一组源又启起来。
     private var probeGeneration = 0
 
+    // MARK: - 永续守护参数
+
+    /// 停滞阈值：正常约每秒一条推送（Gate WS 实测每秒一条），
+    /// 超过该秒数仍无数据即判定停滞并开始自愈。
+    /// 取 10 秒是为了容忍偶发的推送空档，又不至于让用户等太久。
+    private static let stallThreshold: TimeInterval = 10
+
+    /// 自愈冷却：真正断网时避免高频重连（无谓耗电），也让每轮自愈有完整观察窗口。
+    private static let recoveryCooldown: TimeInterval = 10
+
+    /// 同一数据源内最多连续重建次数，超过则切换下一层。
+    private static let maxRestartPerSource = 2
+
+    private var lastRecoveryAt: Date?
+    private var restartCount = 0
+
+    /// 当前源被激活（或重建）的时刻，用于「刚切换还没收到数据」的宽限判定。
+    private var sourceActivatedAt = Date.distantPast
+
+    private var pathMonitor: NWPathMonitor?
+    private var networkWasSatisfied: Bool?
+
     private init() {}
 
     // MARK: - 对外接口
@@ -59,6 +98,7 @@ final class TickerStore: ObservableObject {
         tickCount = 0
         activateCurrentSource()
         startStallWatchdog()
+        startNetworkMonitor()
         probeOKXAvailability(generation: probeGeneration)
     }
 
@@ -69,9 +109,22 @@ final class TickerStore: ObservableObject {
         sources = []
         stallTimer?.invalidate()
         stallTimer = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        networkWasSatisfied = nil
+        lastRecoveryAt = nil
+        restartCount = 0
         state = .idle
         activeSourceName = "未启动"
         LogCollector.shared.append("market: 已全部停止")
+    }
+
+    /// 回到前台时调用：若数据已停滞则立即自愈，不必等看门狗的下一个检查周期。
+    func checkFreshness() {
+        let gap = Date().timeIntervalSince(referenceTime)
+        guard gap > Self.stallThreshold else { return }
+        LogCollector.shared.append("market: 回到前台，检测到 \(Int(gap)) 秒无数据 → 立即自愈")
+        forceRecover(reason: "回到前台")
     }
 
     // MARK: - 数据源切换
@@ -85,22 +138,30 @@ final class TickerStore: ObservableObject {
 
         let source = sources[currentIndex]
         currentSource = source
+        restartCount = 0
+        sourceActivatedAt = Date()
 
+        // 行情源可能在任意线程回调，统一归拢到主线程后再改状态
         source.onTick = { [weak self] snapshot in
-            guard let self = self else { return }
-            self.snapshot = snapshot
-            self.tickCount += 1
-            self.lastTickAt = snapshot.updatedAt
-            self.onSnapshot?(snapshot)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.snapshot = snapshot
+                self.tickCount += 1
+                self.lastTickAt = snapshot.updatedAt
+                self.restartCount = 0            // 数据回来了，清空自愈计数
+                self.onSnapshot?(snapshot)
+            }
         }
 
         source.onState = { [weak self] newState in
-            guard let self = self else { return }
-            // 只接受当前源的状态，避免已停用源的迟到回调干扰
-            guard self.currentSource === source else { return }
-            self.state = newState
-            if case .failed = newState {
-                self.escalateToNextTier()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // 只接受当前源的状态，避免已停用源的迟到回调干扰
+                guard self.currentSource === source else { return }
+                self.state = newState
+                if case .failed(let reason) = newState {
+                    self.attemptRecovery(reason: "连接失败（\(reason)）")
+                }
             }
         }
 
@@ -113,15 +174,109 @@ final class TickerStore: ObservableObject {
         source.start()
     }
 
-    private func escalateToNextTier() {
-        guard currentIndex + 1 < sources.count else {
-            LogCollector.shared.append("market: 已无更低层级可降级")
-            return
+    // MARK: - 自愈闭环
+
+    /// 当前源上一次「应该有数据」的参考时刻。
+    ///
+    /// 取「最后一条数据时间」与「本源激活时刻」的较晚者 ——
+    /// 这样刚切换/重建源时会有一段宽限期，不会因「连接还没建好」而误判停滞。
+    private var referenceTime: Date {
+        if let last = lastTickAt, last > sourceActivatedAt { return last }
+        return sourceActivatedAt
+    }
+
+    /// 停滞看门狗：每 5 秒核对一次数据新鲜度。
+    ///
+    /// 注意这里**不做任何恢复计数的清零** —— 计数只在真正收到数据（onTick）时清空，
+    /// 否则「重建后尚未收到数据」的宽限期会把计数抹掉，导致永远降不了级。
+    private func startStallWatchdog() {
+        let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let gap = Date().timeIntervalSince(self.referenceTime)
+            guard gap > Self.stallThreshold else { return }
+            self.attemptRecovery(reason: "\(Int(gap)) 秒无数据")
         }
+        RunLoop.main.add(timer, forMode: .common)
+        stallTimer = timer
+    }
+
+    /// 统一的恢复入口：先重建当前源，反复无效则切换下一层（到底后回绕链首）。
+    ///
+    /// 这条闭环是「任何情况下都恢复」的核心 —— 它不关心失效原因（半死连接、
+    /// 服务器无推送、切换网络丢连接），只要「没有数据」就会一路重试下去。
+    private func attemptRecovery(reason: String) {
+        guard canRecoverNow() else { return }
+        lastRecoveryAt = Date()
+
+        if restartCount < Self.maxRestartPerSource {
+            restartCount += 1
+            LogCollector.shared.append(
+                "market: \(reason) → 重建 \(activeSourceName)（第 \(restartCount)/\(Self.maxRestartPerSource) 次）"
+            )
+            restartCurrentSource()
+        } else {
+            restartCount = 0
+            LogCollector.shared.append("market: \(reason) → \(activeSourceName) 反复无数据，切换数据源")
+            moveToNextSource()
+        }
+    }
+
+    /// 供「网络恢复 / 回到前台」使用：绕过冷却，立即恢复。
+    private func forceRecover(reason: String) {
+        lastRecoveryAt = nil
+        attemptRecovery(reason: reason)
+    }
+
+    private func canRecoverNow() -> Bool {
+        guard let last = lastRecoveryAt else { return true }
+        return Date().timeIntervalSince(last) >= Self.recoveryCooldown
+    }
+
+    /// 重建当前源：停掉再启动，丢弃可能已「半死」的连接。
+    private func restartCurrentSource() {
+        guard let source = currentSource else { return }
+        source.stop()
+        sourceActivatedAt = Date()   // 重建后重新开始计时
+        source.start()
+    }
+
+    /// 切到下一层；已到最后一层则回绕到链首继续重试（永不放弃）。
+    ///
+    /// 回绕的意义：三层源同时被网络问题打挂后，一旦网络恢复，必须能重新用上最好的源，
+    /// 而不是卡在「已无更低层级可降级」的终态。
+    private func moveToNextSource() {
         currentSource?.stop()
-        currentIndex += 1
-        LogCollector.shared.append("market: 降级到层级 \(sources[currentIndex].tier)")
+        if currentIndex + 1 < sources.count {
+            currentIndex += 1
+        } else {
+            currentIndex = 0
+            LogCollector.shared.append("market: 已到最后一层，回绕链首重试")
+        }
         activateCurrentSource()
+    }
+
+    // MARK: - 网络状态监听
+
+    /// 网络由「不可达」恢复为「可达」时立即重建源 —— 断网恢复的关键路径。
+    ///
+    /// 说明：只处理「恢复」这一跳；Wi-Fi 与蜂窝互切等连接仍在但已失效的场景由看门狗兜底。
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let satisfied = (path.status == .satisfied)
+                let wasSatisfied = self.networkWasSatisfied
+                self.networkWasSatisfied = satisfied
+
+                if satisfied, wasSatisfied == false {
+                    LogCollector.shared.append("market: 网络已恢复 → 立即重建当前源")
+                    self.forceRecover(reason: "网络恢复")
+                }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "market.network"))
     }
 
     // MARK: - 首选源探测（自适应优先级）
@@ -156,19 +311,5 @@ final class TickerStore: ObservableObject {
         currentSource?.stop()
         currentIndex = 0
         activateCurrentSource()
-    }
-
-    // MARK: - 心跳看门狗（M4 扩充为完整健康检查）
-
-    private func startStallWatchdog() {
-        let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
-            guard let self = self, let last = self.lastTickAt else { return }
-            let gap = Date().timeIntervalSince(last)
-            if gap > 5 {
-                LogCollector.shared.append("market: \(Int(gap)) 秒无推送（疑似中断）")
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        stallTimer = timer
     }
 }

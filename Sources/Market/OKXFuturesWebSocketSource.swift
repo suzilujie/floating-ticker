@@ -29,7 +29,13 @@ final class OKXFuturesWebSocketSource: MarketDataSource {
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var pingTimer: Timer?
+    private var heartbeatTimer: Timer?
     private var isStopped = false
+
+    /// 协议级心跳间隔。与上面的文本 `ping` 是两回事：
+    /// 文本 ping 是 OKX 的业务保活要求，协议级 ping 用于识破「半死连接」
+    /// （锁屏 / 后台后 TCP 被静默掐断时，receive() 不会回调 error）。
+    private static let heartbeatInterval: TimeInterval = 15
 
     func start() {
         isStopped = false
@@ -47,18 +53,42 @@ final class OKXFuturesWebSocketSource: MarketDataSource {
 
         sendSubscribe()
         startPing()
+        startHeartbeat()
         receiveLoop()
     }
 
     func stop() {
         isStopped = true
         stopPing()
+        stopHeartbeat()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session?.invalidateAndCancel()
         session = nil
         onState?(.idle)
         LogCollector.shared.append("market[OKX]: 已停止")
+    }
+
+    // MARK: - 协议级心跳
+
+    /// 定时发协议级 ping。失败即判定链路已断并上报 `.failed`，交由上层自愈。
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
+            guard let self = self, !self.isStopped else { return }
+            self.task?.sendPing { [weak self] error in
+                guard let error = error else { return }
+                LogCollector.shared.append("market[OKX]: 心跳失败 \(error.localizedDescription)")
+                DispatchQueue.main.async { self?.onState?(.failed("心跳失败")) }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
     }
 
     // MARK: - 发送
