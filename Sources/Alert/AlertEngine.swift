@@ -6,23 +6,25 @@ import UIKit
 
 /// 价格报警引擎。
 ///
-/// **状态机（2026-09-21 简化为「状态式」判定，不再用容差/穿越/冷却）**：
+/// **触发方式是「穿越（crossing）」**：
 ///
-///     ARMED ──价格进入触发侧（默认：低于目标价）──▶ ALERTING
-///       ▲                                            │
-///       │                                    ┌───────┴────────┐
-///       │                          价格回到另一侧          用户手动停止
-///       │                                    │                │
-///       └────────────────────────────────────┘                ▼
-///       ▲                                                SILENCED
-///       └────────────── 价格回到另一侧 ──────────────────────┘
+///     ARMED ──价格穿过目标价、进入触发侧──▶ ALERTING
+///       ▲                                      │
+///       │                           ┌──────────┴──────────┐
+///       │                    价格回到另一侧           用户手动停止
+///       │                           │                    │
+///       └───────────────────────────┘                    ▼
+///       ▲                                            SILENCED
+///       └──────────── 价格回到另一侧 ───────────────────┘
 ///
 /// 规则来源（用户明确要求）：
 /// 1. **不要容差** —— 目标价就是硬阈值
-/// 2. 价格在触发侧（默认"低于目标价"）**就一直报警**
-/// 3. 价格回到另一侧 → **自动停止**
-/// 4. 报警期间可手动停止；**手动停止后需价格先回到另一侧、再次进入触发侧**才重新报警
-///    （否则关掉后下一笔行情会立刻又报，等于关不掉）
+/// 2. **只在"穿过"那一刻触发**：上一价在另一侧、当前价进入触发侧（默认：跌破目标价）
+/// 3. 报警后持续响；价格回到另一侧 → **自动停止**
+/// 4. 报警期间可手动停止；手动停止后需价格先回到另一侧、**再次穿过**才重新报警
+///
+/// ⚠️ "穿越式"的固有特性（务必知悉）：**打开 App 时价格若已经在目标价以下，
+/// 不会立刻报警** —— 因为没有发生穿越。若希望"启动时就检一遍"，需要另加规则。
 ///
 /// 线程：所有状态变更都在主线程（行情回调经 DispatchQueue.main.async 归拢，
 /// 计时器落在主 RunLoop）。
@@ -85,8 +87,9 @@ final class AlertEngine: ObservableObject {
         isStarted = true
 
         LogCollector.shared.append(
-            "alert: 引擎启动 —— \(config.targetText) "
-            + (config.onlyDown ? "以下就报警（回到上方自动停）" : "以上就报警（回到下方自动停）")
+            "alert: 引擎启动 —— 价格"
+            + (config.onlyDown ? "跌破" : "涨破")
+            + " \(config.targetText) 时报警（回到另一侧自动停）"
         )
 
         TickerStore.shared.onSnapshot = { [weak self] snapshot in
@@ -153,6 +156,7 @@ final class AlertEngine: ObservableObject {
             return
         }
 
+        let previous = lastPrice
         lastPrice = price
 
         guard config.isEnabled else { return }
@@ -161,8 +165,12 @@ final class AlertEngine: ObservableObject {
 
         switch phase {
         case .armed:
-            // 价格已进入触发侧 → 立即开始报警
-            if onTriggerSide { fire(isTest: false) }
+            // 只在「穿过」时触发：上一价在另一侧（或恰在阈值上），当前价进入触发侧。
+            // 首笔行情没有上一价可比较 → 不触发（穿越式不认"一开始就在里面"）。
+            guard let previous = previous else { return }
+            if crossed(previous: previous, current: price) {
+                fire(isTest: false)
+            }
 
         case .alerting:
             // 价格回到另一侧 → 自动停止
@@ -182,6 +190,21 @@ final class AlertEngine: ObservableObject {
                     "alert: 价格已回到 \(config.targetText) \(config.safeSideText)，重新武装"
                 )
             }
+        }
+    }
+
+    /// 是否「穿过」目标价进入触发侧。
+    ///
+    /// - 向下（默认）：上一价 ≥ 目标价 且 当前价 &lt; 目标价
+    /// - 向上：上一价 ≤ 目标价 且 当前价 &gt; 目标价
+    ///
+    /// 用「上一价在哪一侧」而不是「差值符号」，是为了正确覆盖跳变：
+    /// 上一价 69200、当前价 68800（中间没有任何一帧落在阈值上）同样算穿过。
+    private func crossed(previous: Double, current: Double) -> Bool {
+        if config.onlyDown {
+            return previous >= config.targetPrice && current < config.targetPrice
+        } else {
+            return previous <= config.targetPrice && current > config.targetPrice
         }
     }
 
@@ -229,15 +252,10 @@ final class AlertEngine: ObservableObject {
 
         if isTest {
             isTest = false
-            // 试听结束：按当前价格恢复状态。若此刻价格恰在触发侧，
-            // 不能直接回到「已武装」（否则下一笔就立刻真报），故转为静默等它先离开。
-            if let p = lastPrice, config.isTriggeredSide(p) {
-                phase = .silenced
-                LogCollector.shared.append("alert: 试听结束（当前价在触发侧，转静默，待价格离开后再武装）")
-            } else {
-                phase = .armed
-                LogCollector.shared.append("alert: 试听结束")
-            }
+            // 试听结束直接回到已武装即可：触发条件是「穿过」，
+            // 光"价格在触发侧"不会触发，所以不存在"试听完立刻真报"的问题。
+            phase = .armed
+            LogCollector.shared.append("alert: 试听结束")
             return
         }
 
@@ -272,8 +290,9 @@ final class AlertEngine: ObservableObject {
     /// 把状态机归零（回到已武装、清空上一价）。
     ///
     /// 用于参数变更后立即恢复可判定状态。注意 `lastPrice = nil` 的用意：
-    /// 下一次行情会重新建立基准；若新目标价正好落在现价上方（触发侧），
-    /// 下一笔即触发 —— 这正是"改成现价附近就能立刻验证"的原因。
+    /// 下一次行情只用来重建基准价，**从再下一笔起**才能判定穿越 ——
+    /// 也就是说，改完参数后需要价格真正再穿过一次目标价才会报警
+    /// （穿越式触发下不存在"改完立刻触发"，这是它的固有特性）。
     private func resetState() {
         endTimer?.invalidate()
         endTimer = nil
