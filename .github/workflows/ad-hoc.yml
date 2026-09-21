@@ -43,11 +43,10 @@ jobs:
           KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
-          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
         run: |
-          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ] || [ -z "$TEAM_ID" ]; then
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=跳过 Ad Hoc 分发::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8 / ASC_TEAM_ID；本次跳过，其余流程不受影响"
+            echo "::notice title=跳过 Ad Hoc 分发::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8；本次跳过，其余流程不受影响"
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "密钥已配置，将执行 Ad Hoc 签名并发布"
@@ -105,12 +104,9 @@ jobs:
         env:
           KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
-          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
         run: |
           set -e
-          # 关键：必须显式指定 DEVELOPMENT_TEAM。
-          # 工程里没有写 Team ID，API 密钥认证也不会自动补上，
-          # 否则会报 "Signing requires a development team" 导致 archive 失败。
+          # DEVELOPMENT_TEAM 已写进 project.yml（见该文件），此处无需重复指定
           xcodebuild archive \
             -project FloatingTicker.xcodeproj \
             -scheme FloatingTicker \
@@ -121,7 +117,6 @@ jobs:
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             MARKETING_VERSION="0.1"
 

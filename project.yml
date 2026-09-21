@@ -28,6 +28,9 @@ targets:
         PRODUCT_NAME: FloatingTicker
         # 免费 Apple ID 无法注册已被占用的 Bundle ID，此处保持唯一即可（可按需修改）
         PRODUCT_BUNDLE_IDENTIFIER: com.xfish.floatingticker
+        # 付费开发者账号的 Team ID（Ad Hoc / 自动签名必需）。
+        # 注意：这是账号专属信息，若更换开发者账号需同步修改。
+        DEVELOPMENT_TEAM: "S2GX2R7LD5"
         INFOPLIST_FILE: Support/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
         TARGETED_DEVICE_FAMILY: "1"
