@@ -462,7 +462,8 @@ OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致�
 <h3 id="datasource-adaptive">4.6 源优先级自适应（Adaptive Source Priority，2026-09-21）</h3>
 
 <blockquote>
-<p><b>需求</b>：用户希望「能用欧易（OKX）就用欧易，不能用就走 Gate / CoinEx」。而 OKX <b>仅代理环境可达</b>（直连被 TLS 阻断、<code>www.okx.com</code> 遭 DNS 污染），因此需要一个判断依据。</p>
+<p><b>需求</b>：<b>不管有没有挂 VPN，只要 OKX 可达就优先用 OKX</b>；不可达则走 Gate / CoinEx。而 OKX 在本网络直连不可达（<code>ws.okx.com</code> 被 TLS 阻断、<code>www.okx.com</code> 遭 DNS 污染至 169.254.0.2），因此需要一个判断依据。</p>
+<p>注意：<b>「需要代理」是网络环境的性质，不是 OKX 的限制</b> —— 换个网络（境外、某些运营商或企业内网）可能直连就通。因此 App <b>不判断「有没有开 VPN」，只判断「此刻通不通」</b>。</p>
 </blockquote>
 
 <h4>为什么不用「检测是否开了 VPN」</h4>
@@ -487,9 +488,9 @@ OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致�
 <table>
 <thead><tr><th>项</th><th>取值</th><th>理由</th></tr></thead>
 <tbody>
-<tr><td>探针端点</td><td><code>GET https://www.okx.com/api/v5/public/time</code></td><td>无参数、响应体最小；不用行情接口是为了避开频控（rate limit）</td></tr>
-<tr><td>超时</td><td>3 秒</td><td>代理链路首次 TLS 握手偏慢（实测 OKX REST 经代理约 1.5s），但超过 3 秒才响应的话，作为实时行情源已无意义</td></tr>
-<tr><td>判定规则</td><td>无错误 + HTTP 200 + 业务码 <code>"0"</code></td><td>三者缺一不可：被劫持时常见「HTTP 200 但响应体不是预期结构」，只看状态码会误判</td></tr>
+<tr><td>探针端点</td><td><b><code>wss://ws.okx.com:8443/ws/v5/public</code></b>，做协议级 ping/pong 往返</td><td><b>必须探测「实际要用的那个端点」</b>。早先探测 REST（<code>www.okx.com</code>）而实际用 WS，二者是不同端点 —— 代理分流规则只放行其中一个时就会误判为可用，导致「切到 WS → 连不上降级 → 探测又说可达 → 又切回」的反复横跳</td></tr>
+<tr><td>超时</td><td>3 秒（另加 1.5 秒兜底）</td><td>代理链路首次握手偏慢（实测 OKX WS 经代理 924ms、REST 约 1.5s），但超过 3 秒才响应的话，作为实时行情源已无意义</td></tr>
+<tr><td>判定规则</td><td>WS 握手成功 <b>且</b> ping/pong 往返成功</td><td>不能只看「能否建立连接」：被劫持 / 出口网关拦截时 TCP 握手可能「成功」，但数据无法往返</td></tr>
 <tr><td>触发时机</td><td><b>四处</b>：启动 / <b>网络路径变化</b>（开关 VPN 必走）/ <b>定期 60 秒</b>兜底 / <b>回到前台</b></td><td>成本极低（几 KB）。「当前网络能否通 OKX」会随开关 VPN 翻转，故不能只探一次（原「仅启动探测」已被真机问题推翻，见本节末尾）</td></tr>
 </tbody>
 </table>
