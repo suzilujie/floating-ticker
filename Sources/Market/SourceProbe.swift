@@ -187,8 +187,10 @@ enum SourceProbe {
 
     /// 探测 OKX 是否可达。回调保证在主线程。
     ///
-    /// 调用约束：仅在 `TickerStore.start()` 触发一次；探测结果由调用方决定是否采用。
-    static func probeOKX(completion: @escaping (Bool) -> Void) {
+    /// - Parameter log: 是否写入日志。启动探测需要（作为决策依据），
+    ///   而每 60 秒一次的定期重评不需要 —— 否则会把环形日志刷满，
+    ///   冲掉更要紧的自愈记录（重建 / 降级 / 回绕）。
+    static func probeOKX(log: Bool = true, completion: @escaping (Bool) -> Void) {
         var request = URLRequest(url: okxProbeURL)
         request.timeoutInterval = timeout
         // 必须反映"此刻"的网络状况，不能被任何缓存结果掩盖
@@ -198,10 +200,12 @@ enum SourceProbe {
         URLSession.shared.dataTask(with: request) { data, response, error in
             let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
             let verdict = evaluate(data: data, response: response, error: error)
-            LogCollector.shared.append(
-                "probe: OKX \(verdict.isReachable ? "可达" : "不可达")"
-                    + "（\(elapsed)ms，\(verdict.reason)）"
-            )
+            if log {
+                LogCollector.shared.append(
+                    "probe: OKX \(verdict.isReachable ? "可达" : "不可达")"
+                        + "（\(elapsed)ms，\(verdict.reason)）"
+                )
+            }
             DispatchQueue.main.async { completion(verdict.isReachable) }
         }.resume()
     }

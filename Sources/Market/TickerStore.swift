@@ -78,6 +78,11 @@ final class TickerStore: ObservableObject {
     private var pathMonitor: NWPathMonitor?
     private var networkWasSatisfied: Bool?
 
+    /// 上一次重新评估 OKX 可达性的时刻（节流用：网络抖动会连续触发多次路径变化）
+    private var lastOKXProbeAt: Date?
+    /// 定期重评 OKX 的定时器：兜住「网络形态变了但 NWPathMonitor 未回调」的情况
+    private var okxReevalTimer: Timer?
+
     private init() {}
 
     // MARK: - 对外接口
@@ -99,6 +104,7 @@ final class TickerStore: ObservableObject {
         activateCurrentSource()
         startStallWatchdog()
         startNetworkMonitor()
+        startOKXReevaluation()
         probeOKXAvailability(generation: probeGeneration)
     }
 
@@ -112,6 +118,9 @@ final class TickerStore: ObservableObject {
         pathMonitor?.cancel()
         pathMonitor = nil
         networkWasSatisfied = nil
+        okxReevalTimer?.invalidate()
+        okxReevalTimer = nil
+        lastOKXProbeAt = nil
         lastRecoveryAt = nil
         restartCount = 0
         state = .idle
@@ -121,6 +130,9 @@ final class TickerStore: ObservableObject {
 
     /// 回到前台时调用：若数据已停滞则立即自愈，不必等看门狗的下一个检查周期。
     func checkFreshness() {
+        // 回到前台顺带重评一次源优先级：用户很可能刚在外面开关过 VPN
+        reevaluateOKX()
+
         let gap = Date().timeIntervalSince(referenceTime)
         guard gap > Self.stallThreshold else { return }
         LogCollector.shared.append("market: 回到前台，检测到 \(Int(gap)) 秒无数据 → 立即自愈")
@@ -274,6 +286,13 @@ final class TickerStore: ObservableObject {
                     LogCollector.shared.append("market: 网络已恢复 → 立即重建当前源")
                     self.forceRecover(reason: "网络恢复")
                 }
+
+                // 网络路径变化（开关 VPN 必走这里）→ 重新评估 OKX 优先级。
+                // 「哪个源最快」会随网络环境翻转（直连时 OKX 不可达、挂代理时 OKX 最快），
+                // 不重评就会一直停留在旧选择上 —— 这正是 R17 记录的已知边界。
+                if satisfied {
+                    self.reevaluateOKX()
+                }
             }
         }
         monitor.start(queue: DispatchQueue(label: "market.network"))
@@ -294,8 +313,50 @@ final class TickerStore: ObservableObject {
                 LogCollector.shared.append("probe: 结果已过期，忽略（源链已重建）")
                 return
             }
-            guard isReachable else { return }
-            self.promoteOKXToPrimary()
+            self.applyOKXAvailability(isReachable, generation: generation)
+        }
+    }
+
+    // MARK: - OKX 优先级动态重评（网络环境变化时）
+
+    /// 定期重评 OKX 可达性。
+    ///
+    /// 为什么除路径回调外还要定期兜底：部分 TUN 模式 VPN 开关时不改动
+    /// NWPathMonitor 关注的路径状态（只在接口层变化），回调可能不触发。
+    /// 间隔取 60 秒，单次探测仅几 KB，耗电可忽略；用户开关 VPN 后最迟 1 分钟内生效。
+    private func startOKXReevaluation() {
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            self?.reevaluateOKX()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        okxReevalTimer = timer
+    }
+
+    /// 重新评估 OKX 是否可达并据此调整源链。带 15 秒节流：
+    /// 网络抖动会连续触发多次路径变化，没必要每次都探。
+    private func reevaluateOKX() {
+        if let last = lastOKXProbeAt, Date().timeIntervalSince(last) < 15 { return }
+        lastOKXProbeAt = Date()
+
+        let generation = probeGeneration
+        SourceProbe.probeOKX(log: false) { [weak self] isReachable in
+            guard let self = self else { return }   // 回调已在主线程
+            self.applyOKXAvailability(isReachable, generation: generation)
+        }
+    }
+
+    /// 根据 OKX 可达性调整源链：
+    /// - 可达且链上还没有 OKX → 提升为首选并切换过去
+    /// - 不可达且链上有 OKX → 从链上移除（若正在用则立即切回 Gate 链）
+    /// - 结果与现状一致 → 什么都不做（避免无谓的源切换，切换会让价格跳一下）
+    private func applyOKXAvailability(_ reachable: Bool, generation: Int) {
+        guard probeGeneration == generation else { return }
+
+        let okxPresent = sources.contains { $0 is OKXFuturesWebSocketSource }
+        if reachable, !okxPresent {
+            promoteOKXToPrimary()
+        } else if !reachable, okxPresent {
+            demoteOKX()
         }
     }
 
@@ -311,5 +372,26 @@ final class TickerStore: ObservableObject {
         currentSource?.stop()
         currentIndex = 0
         activateCurrentSource()
+    }
+
+    /// OKX 不再可达（例如关闭了代理）：从源链移除，避免继续用一个必然失败的源。
+    ///
+    /// 若当前正在用 OKX，则立即切回链首（即 Gate 链的第一个源），
+    /// 而不是干等看门狗判定停滞再降级 —— 这样关闭 VPN 后能立刻切走。
+    private func demoteOKX() {
+        guard let idx = sources.firstIndex(where: { $0 is OKXFuturesWebSocketSource }) else { return }
+
+        let wasActive = (currentIndex == idx)
+        sources.remove(at: idx)
+
+        if wasActive {
+            LogCollector.shared.append("market: OKX 已不可达 → 立即切回 Gate 链")
+            currentIndex = 0
+            activateCurrentSource()
+        } else {
+            // 当前源排在 OKX 之后时，索引整体前移一位，保持指向同一个源
+            if currentIndex > idx { currentIndex -= 1 }
+            LogCollector.shared.append("market: OKX 已不可达，已从源链移除")
+        }
     }
 }
