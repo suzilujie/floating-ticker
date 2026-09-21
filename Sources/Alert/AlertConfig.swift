@@ -2,44 +2,40 @@ import Foundation
 
 /// 价格报警的配置项。
 ///
-/// 设计取舍：
-/// - 阈值、容差、方向、时长、冷却全部可配，并持久化到 UserDefaults，
-///   重启 App 不丢（免费证书每 7 天要重签，重设配置会很烦）。
-/// - 用「容差」把"到达 xxx 附近"量化成一个价格带，避免用浮点数相等判定
-///   （行情是浮点值，几乎不可能正好等于 69000）。
+/// **语义（2026-09-21 简化，去掉容差与冷却）**：
+/// 不再用「目标价 ± 容差」的触发带，而是**直接用目标价作为硬阈值**：
+///
+/// - 价格处于「触发侧」（默认：低于目标价）→ 报警，并持续响
+/// - 价格回到另一侧 → **自动停止**
+/// - 报警期间可手动停止；手动停止后进入静默，**需价格先回到另一侧、再次进入触发侧**才重新报警
+///
+/// 这样"配置 69000，跌到 69000 以下就一直报"的直觉得以直接实现，
+/// 也避免了容差带来的"到底 69000 还是 68950 才算"的含糊。
+///
+/// 保留 `onlyDown` 只是为了支持反向用法（涨破某价位时报警）。
 struct AlertConfig: Codable, Equatable {
 
     /// 是否启用报警
     var isEnabled: Bool = true
 
-    /// 目标价（触发基准）
+    /// 目标价（硬阈值，不再有容差）
     var targetPrice: Double = 69000
 
-    /// 容差：价格进入 [目标−容差, 目标+容差] 即视为「到达附近」
-    var tolerance: Double = 50
-
-    /// 触发方向：true = 仅向下跌破；false = 双向（涨到或跌到都报）
+    /// 触发方向：
+    /// - `true`（默认）：**跌破**目标价（价格 &lt; 目标价）时报警
+    /// - `false`：**涨破**目标价（价格 &gt; 目标价）时报警
     var onlyDown: Bool = true
-
-    /// 报警结束后的冷却时长（秒）——防止价格在阈值附近徘徊时反复轰炸
-    ///
-    /// 注意：实盘报警**没有自动停止时长**，会一直响到用户主动按「停止」，
-    /// 冷却时间从「用户停止的那一刻」开始计。故此处不再有 duration 字段
-    /// （旧存档里的 duration 会被解码器直接忽略，无需迁移）。
-    var cooldown: TimeInterval = 60
-
-    /// 解除冷却所需的「离开距离」倍数：价格必须离开目标超过 容差×该倍数，
-    /// 才重新武装。这是迟滞（hysteresis）设计，是防轰炸的关键。
-    var resetMultiplier: Double = 2
-
-    /// 触发带上沿
-    var upperBand: Double { targetPrice + tolerance }
-
-    /// 触发带下沿
-    var lowerBand: Double { targetPrice - tolerance }
 
     /// 目标价文本：取整、不加千分位，短而醒目（悬浮窗内要一眼看清）
     var targetText: String { String(format: "%.0f", targetPrice) }
+
+    /// 当前价格是否处于「触发侧」
+    func isTriggeredSide(_ price: Double) -> Bool {
+        onlyDown ? price < targetPrice : price > targetPrice
+    }
+
+    /// 「非触发侧」的方位描述（仅用于日志与界面文案）
+    var safeSideText: String { onlyDown ? "上方" : "下方" }
 }
 
 // MARK: - 持久化
@@ -48,25 +44,17 @@ extension AlertConfig {
 
     private static let storageKey = "alert.config.v1"
 
-    /// 旧版本的冷却默认值（5 分钟）。仅用于迁移判断，**不要再改动**：
-    /// 存档里若仍是这个值，说明它来自旧默认值、而非用户的自选值。
-    private static let legacyCooldown: TimeInterval = 300
-
+    /// 读取配置。
+    ///
+    /// 向后兼容说明：旧存档里还有 `tolerance` / `cooldown` / `resetMultiplier` 字段，
+    /// 它们在新结构里已不存在 —— `JSONDecoder` 会直接忽略这些多余键，
+    /// 而 `isEnabled` / `targetPrice` / `onlyDown` 三个键名未变，会正常还原。
+    /// 因此**无需迁移代码**。
     static func load() -> AlertConfig {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              var decoded = try? JSONDecoder().decode(AlertConfig.self, from: data) else {
+              let decoded = try? JSONDecoder().decode(AlertConfig.self, from: data) else {
             return AlertConfig()
         }
-
-        // 迁移：把"仍是旧默认值"的冷却从 300 秒改为新的 60 秒。
-        // 必须显式迁移 —— 已装机的设备会继续沿用存档里的值，
-        // 只改代码里的默认值等于没改（UserDefaults 存档的典型坑）。
-        if decoded.cooldown == legacyCooldown {
-            decoded.cooldown = AlertConfig().cooldown
-            decoded.save()
-            LogCollector.shared.append("alert: 冷却默认值迁移为 \(Int(decoded.cooldown)) 秒")
-        }
-
         return decoded
     }
 

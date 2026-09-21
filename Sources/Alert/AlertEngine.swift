@@ -6,15 +6,23 @@ import UIKit
 
 /// 价格报警引擎。
 ///
-/// 状态机（迟滞设计 —— 价格在阈值附近徘徊时不会反复轰炸）：
+/// **状态机（2026-09-21 简化为「状态式」判定，不再用容差/穿越/冷却）**：
 ///
-///     ARMED ──价格触及/穿越触发带──▶ ALERTING ──时长到──▶ COOLDOWN
-///       ▲                                                   │
-///       └──── 冷却到 && 价格已离开解除带（±容差×倍数）────────┘
+///     ARMED ──价格进入触发侧（默认：低于目标价）──▶ ALERTING
+///       ▲                                            │
+///       │                                    ┌───────┴────────┐
+///       │                          价格回到另一侧          用户手动停止
+///       │                                    │                │
+///       └────────────────────────────────────┘                ▼
+///       ▲                                                SILENCED
+///       └────────────── 价格回到另一侧 ──────────────────────┘
 ///
-/// 为什么必须做迟滞：若只用「进入容差带即报警」，价格在 69000 上下波动时
-/// 会每几秒报一次，实际上等于不可用。故要求价格先真正离开（默认 ±100），
-/// 才允许下一次触发。
+/// 规则来源（用户明确要求）：
+/// 1. **不要容差** —— 目标价就是硬阈值
+/// 2. 价格在触发侧（默认"低于目标价"）**就一直报警**
+/// 3. 价格回到另一侧 → **自动停止**
+/// 4. 报警期间可手动停止；**手动停止后需价格先回到另一侧、再次进入触发侧**才重新报警
+///    （否则关掉后下一笔行情会立刻又报，等于关不掉）
 ///
 /// 线程：所有状态变更都在主线程（行情回调经 DispatchQueue.main.async 归拢，
 /// 计时器落在主 RunLoop）。
@@ -25,7 +33,7 @@ final class AlertEngine: ObservableObject {
     enum Phase: String {
         case armed = "已武装"
         case alerting = "报警中"
-        case cooldown = "冷却中"
+        case silenced = "已静默"
     }
 
     @Published private(set) var phase: Phase = .armed
@@ -38,17 +46,10 @@ final class AlertEngine: ObservableObject {
             guard config != oldValue else { return }
             config.save()
 
-            // 触发参数一变就把状态机归零：否则用户刚改完目标价，却还要等上一轮冷却
-            // 走完（最长 5 分钟）才可能触发，对"改完想立刻验证"的用法极不友好。
-            if config.targetPrice != oldValue.targetPrice
-                || config.tolerance != oldValue.tolerance
-                || config.onlyDown != oldValue.onlyDown {
-                resetState()
-            }
-
-            if !config.isEnabled, isAlerting {
-                stopAlert()
-            }
+            // 任何触发参数变更都把状态机归零：这样改完能立刻按新参数判定
+            // （例如把目标价改到现价下方即可马上验证），
+            // 也不会残留上一轮的报警/静默状态。
+            resetState()
         }
     }
 
@@ -61,17 +62,15 @@ final class AlertEngine: ObservableObject {
     private var hapticTimer: Timer?
     private var hapticTick = 0
     private var lastPrice: Double?
-    private var cooldownEndsAt: Date?
     /// 本次报警开始时间。用于识别浮窗暂停键的"误报停止"（见 PiPController）。
     private(set) var alertStartedAt: Date?
-    /// 本次报警是否来自「试听」——试听结束不进冷却，不污染实盘状态
+    /// 本次报警是否来自「试听」——试听是固定 6 秒的演练，不影响实盘判定状态
     private var isTest = false
 
     /// 数据源切换后是否需要「吞掉」下一笔快照。
     ///
     /// 原因：跨源基差（basis）会让价格在切换瞬间跳变几十美元。若把这笔跳变
-    /// 当作真实行情参与穿越判定，可能凭空触发一次误报。故切源后先吞一笔，
-    /// 只把它记为新的基准价，从下一笔起恢复正常判定（见 handle(price:)）。
+    /// 当真实行情，可能凭空触发/停止一次报警。故切源后先吞一笔，只当基准价。
     private var discardNextTick = false
 
     private init() {
@@ -86,8 +85,8 @@ final class AlertEngine: ObservableObject {
         isStarted = true
 
         LogCollector.shared.append(
-            "alert: 引擎启动 目标 \(config.targetText)±\(Int(config.tolerance)) "
-            + (config.onlyDown ? "（仅向下跌破）" : "（双向）")
+            "alert: 引擎启动 —— \(config.targetText) "
+            + (config.onlyDown ? "以下就报警（回到上方自动停）" : "以上就报警（回到下方自动停）")
         )
 
         TickerStore.shared.onSnapshot = { [weak self] snapshot in
@@ -99,7 +98,7 @@ final class AlertEngine: ObservableObject {
 
         // 数据源切换时摘掉跨源跳变。
         // 为什么必须做：不同交易所有基差（实测 CoinEx 77879 / Gate 77935 / OKX 77947），
-        // 切换源瞬间价格会跳变；若把这笔跳变当真实行情参与穿越判定，会凭空触发误报。
+        // 切换源瞬间价格会跳变；若把这笔跳变当真实行情，会凭空触发或误停报警。
         TickerStore.shared.onSourceChanged = { [weak self] name in
             DispatchQueue.main.async {
                 LogCollector.shared.append("alert: 数据源切换为 \(name)，下一笔快照仅作基准价")
@@ -144,7 +143,7 @@ final class AlertEngine: ObservableObject {
     // MARK: - 状态机
 
     private func handle(price: Double) {
-        // 数据源刚切换：这笔只作为新基准价，不参与穿越判定（见 discardNextTick）
+        // 数据源刚切换：这笔只作为新基准价，不参与状态判定（见 discardNextTick）
         if discardNextTick {
             discardNextTick = false
             lastPrice = price
@@ -154,56 +153,36 @@ final class AlertEngine: ObservableObject {
             return
         }
 
-        // 先捕获上一价用于判定方向，再更新
-        let previous = lastPrice
-        defer { lastPrice = price }
+        lastPrice = price
 
         guard config.isEnabled else { return }
 
+        let onTriggerSide = config.isTriggeredSide(price)
+
         switch phase {
         case .armed:
-            guard let previous = previous else {
-                // 首个行情快照就落在触发带内（例如刚启动、或用户把目标价设成现价
-                // 用于验证）：无从判断方向，仍触发一次，避免漏报
-                if inBand(price) { fire(isTest: false) }
-                return
-            }
-            if crossed(previous: previous, current: price) {
-                fire(isTest: false)
-            }
+            // 价格已进入触发侧 → 立即开始报警
+            if onTriggerSide { fire(isTest: false) }
 
         case .alerting:
-            break   // 由 endTimer 负责结束
+            // 价格回到另一侧 → 自动停止
+            if !onTriggerSide {
+                LogCollector.shared.append(
+                    "alert: 价格已回到 \(config.targetText) \(config.safeSideText)，自动停止"
+                )
+                finish(autoStopped: true)
+            }
 
-        case .cooldown:
-            guard let endsAt = cooldownEndsAt, Date() >= endsAt else { return }
-            // 时间到还不够：价格必须真的离开过，否则会在原地反复触发
-            if !inResetBand(price) {
-                cooldownEndsAt = nil
+        case .silenced:
+            // 手动静默中：必须先回到另一侧才重新武装，
+            // 否则"关掉后下一笔又报"，用户等于关不掉。
+            if !onTriggerSide {
                 phase = .armed
-                LogCollector.shared.append("alert: 价格已离开解除带，重新武装")
+                LogCollector.shared.append(
+                    "alert: 价格已回到 \(config.targetText) \(config.safeSideText)，重新武装"
+                )
             }
         }
-    }
-
-    /// 价格是否落在触发带内
-    private func inBand(_ price: Double) -> Bool {
-        abs(price - config.targetPrice) <= config.tolerance
-    }
-
-    /// 价格是否仍落在「解除冷却」范围内（比触发带更宽，构成迟滞）
-    private func inResetBand(_ price: Double) -> Bool {
-        abs(price - config.targetPrice) <= config.tolerance * config.resetMultiplier
-    }
-
-    /// 是否由带外触及 / 穿越触发带。
-    ///
-    /// 用「上一价在带外 && 当前价已进入或越过」判定，同时覆盖两种情形：
-    /// 价格停在带内，以及直接跳穿整条带（如 69200 → 68800，中间没有任何一帧落在带内）。
-    private func crossed(previous: Double, current: Double) -> Bool {
-        let down = previous > config.upperBand && current <= config.upperBand
-        let up = previous < config.lowerBand && current >= config.lowerBand
-        return config.onlyDown ? down : (down || up)
     }
 
     // MARK: - 触发与结束
@@ -218,29 +197,29 @@ final class AlertEngine: ObservableObject {
 
         let current = lastPrice.map { String(format: "%.1f", $0) } ?? "--"
         LogCollector.shared.append(
-            "alert: 触发报警（目标 \(config.targetText)，当前 \(current)，"
-            + (isTest ? "试听" : "实盘") + "）"
+            "alert: 触发报警（\(config.targetText) \(config.safeSideText)的触发侧，"
+            + "当前 \(current)，" + (isTest ? "试听" : "实盘") + "）"
         )
 
         endTimer?.invalidate()
         endTimer = nil
 
-        // 实盘报警**不设自动停止**：按用户要求，只要不按「停止」就一直响。
-        // 停止入口共三处：① App 顶部红色按钮 ② 浮窗的暂停键 ③ 设置卡片里的按钮。
-        // 试听例外：固定 6 秒自动停，否则点一下测试就会一直叫。
-        guard isTest else {
-            LogCollector.shared.append("alert: 将持续响铃与震动，直到用户按「停止」")
-            return
-        }
+        // 实盘报警**不设自动停止时长**：只要价格还在触发侧就一直响，
+        // 直到价格自己回到另一侧（自动停）或用户手动停。
+        // 试听例外：固定 6 秒自动停，否则点一下就会一直叫。
+        guard isTest else { return }
 
         let timer = Timer(timeInterval: Self.testDuration, repeats: false) { [weak self] _ in
-            self?.finish()
+            self?.finish(autoStopped: false)
         }
         RunLoop.main.add(timer, forMode: .common)
         endTimer = timer
     }
 
-    private func finish() {
+    /// 结束报警。
+    /// - Parameter autoStopped: true = 价格回到另一侧自动停（回到已武装）；
+    ///   false = 用户手动停 / 试听到时（进入静默，等价格回到另一侧再武装）
+    private func finish(autoStopped: Bool) {
         endTimer?.invalidate()
         endTimer = nil
         stopHaptics()
@@ -250,63 +229,65 @@ final class AlertEngine: ObservableObject {
 
         if isTest {
             isTest = false
+            // 试听结束：按当前价格恢复状态。若此刻价格恰在触发侧，
+            // 不能直接回到「已武装」（否则下一笔就立刻真报），故转为静默等它先离开。
+            if let p = lastPrice, config.isTriggeredSide(p) {
+                phase = .silenced
+                LogCollector.shared.append("alert: 试听结束（当前价在触发侧，转静默，待价格离开后再武装）")
+            } else {
+                phase = .armed
+                LogCollector.shared.append("alert: 试听结束")
+            }
+            return
+        }
+
+        if autoStopped {
             phase = .armed
-            LogCollector.shared.append("alert: 试听结束（不进冷却）")
         } else {
-            phase = .cooldown
-            cooldownEndsAt = Date().addingTimeInterval(config.cooldown)
-            LogCollector.shared.append("alert: 报警结束，冷却 \(Int(config.cooldown)) 秒")
+            phase = .silenced
+            LogCollector.shared.append("alert: 已手动停止（价格先回到另一侧，再次进入触发侧才会再报）")
         }
     }
 
-    /// 测试报警：立即演练一次「判定 → 响铃 + 红闪」的完整链路。
+    /// 试听报警：立即演练一次「触发 → 响铃 + 红闪 + 震动」的完整输出链路。
     ///
-    /// 与真实触发的唯一差别是**不进冷却**（可反复测）。
-    /// 判定仍走真实的 [`crossed(previous:current:)`]，只是喂给它一段构造走势：
-    ///   上一价 = 触发带外上方，当前价 = 目标价 —— 即"价格从上方跌到目标"。
-    /// 这样即便现价（约 76300）离目标（69000）还有 9.6%，也能立刻验证判定逻辑。
+    /// 与实盘触发的差别：固定 6 秒自动停，且不影响后续实盘判定状态。
     func testFire() {
         guard !isAlerting else { return }
         guard config.isEnabled else {
-            LogCollector.shared.append("alert: 测试未执行——报警当前为关闭状态")
+            LogCollector.shared.append("alert: 试听未执行——报警当前为关闭状态")
             return
         }
 
-        let simulatedPrevious = config.upperBand + config.tolerance
-        guard crossed(previous: simulatedPrevious, current: config.targetPrice) else {
-            LogCollector.shared.append("alert: 测试未触发——模拟走势不满足当前方向判据")
-            return
-        }
-
-        LogCollector.shared.append("alert: 模拟触发（走真实判定路径，不进冷却）")
+        LogCollector.shared.append("alert: 试听开始（6 秒后自动停）")
         fire(isTest: true)
     }
 
     /// 手动停止当前报警
     func stopAlert() {
         guard isAlerting else { return }
-        finish()
+        finish(autoStopped: false)
     }
 
-    /// 把状态机归零（回到已武装、清空冷却与上一价），用于参数变更后立即恢复可触发状态。
+    /// 把状态机归零（回到已武装、清空上一价）。
     ///
-    /// 注意 `lastPrice = nil` 的用意：方向判定必须从头开始，否则会拿"改动前的旧价格"
-    /// 去做跨带判断，产生误触发。副作用是——若改后的目标价正好落在当前价附近，
-    /// 下一次行情推送即触发，这恰好方便验证。
+    /// 用于参数变更后立即恢复可判定状态。注意 `lastPrice = nil` 的用意：
+    /// 下一次行情会重新建立基准；若新目标价正好落在现价上方（触发侧），
+    /// 下一笔即触发 —— 这正是"改成现价附近就能立刻验证"的原因。
     private func resetState() {
         endTimer?.invalidate()
         endTimer = nil
+        stopHaptics()
         sound.stop()
         isAlerting = false
         isTest = false
-        cooldownEndsAt = nil
         lastPrice = nil
         discardNextTick = false
         phase = .armed
-        LogCollector.shared.append("alert: 触发参数变更，状态机重置为已武装")
+        LogCollector.shared.append("alert: 触发参数变更，状态机重置")
     }
 
-    /// 试听时长（秒）：够听清即可，不必像实盘那样响 20 秒
+    /// 试听时长（秒）：够听清即可
     private static let testDuration: TimeInterval = 6
 
     /// 与警报音「嘀」的间隔一致：0.10 秒发声 + 0.07 秒间隔
