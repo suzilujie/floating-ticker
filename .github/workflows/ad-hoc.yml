@@ -43,10 +43,11 @@ jobs:
           KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
         run: |
-          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ]; then
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ] || [ -z "$TEAM_ID" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=跳过 Ad Hoc 分发::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8；本次跳过，其余流程不受影响"
+            echo "::notice title=跳过 Ad Hoc 分发::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8 / ASC_TEAM_ID；本次跳过，其余流程不受影响"
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "密钥已配置，将执行 Ad Hoc 签名并发布"
@@ -104,8 +105,12 @@ jobs:
         env:
           KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
         run: |
           set -e
+          # 关键：必须显式指定 DEVELOPMENT_TEAM。
+          # 工程里没有写 Team ID，API 密钥认证也不会自动补上，
+          # 否则会报 "Signing requires a development team" 导致 archive 失败。
           xcodebuild archive \
             -project FloatingTicker.xcodeproj \
             -scheme FloatingTicker \
@@ -116,7 +121,8 @@ jobs:
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID" \
-            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             MARKETING_VERSION="0.1"
 
       - name: Export Ad Hoc ipa
@@ -222,7 +228,7 @@ jobs:
             echo "### Ad Hoc 分发完成"
             echo ""
             echo "- 提交：$(git rev-parse --short HEAD)"
-            echo "- 版本：0.1（构建号 ${GITHUB_RUN_NUMBER}）"
+            echo "- 版本：0.1（构建号 ${{ github.run_number }}）"
             echo ""
             echo "**手机 Safari 打开下面的链接安装**（须先把设备 UDID 注册进 Devices）："
             echo ""
