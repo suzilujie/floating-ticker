@@ -334,23 +334,38 @@ final class TickerStore: ObservableObject {
 
     // MARK: - OKX 优先级动态重评（网络环境变化时）
 
-    /// 定期重评 OKX 可达性。
+    /// 定期重评 OKX 可达性（高频：每 5 秒）。
     ///
     /// 为什么除路径回调外还要定期兜底：部分 TUN 模式 VPN 开关时不改动
     /// NWPathMonitor 关注的路径状态（只在接口层变化），回调可能不触发。
-    /// 间隔取 60 秒，单次探测仅几 KB，耗电可忽略；用户开关 VPN 后最迟 1 分钟内生效。
+    ///
+    /// 间隔取 5 秒，是为了「OKX 一旦可达就尽快切过去」。为让这个高频可持续，
+    /// `reevaluateOKX` 里做了两条短路（已在用 OKX / 处于失败冷却），
+    /// 避免无意义的探测与 TLS 握手（否则空闲时每天上万次，纯属浪费电量与流量）。
     private func startOKXReevaluation() {
-        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.reevaluateOKX()
         }
         RunLoop.main.add(timer, forMode: .common)
         okxReevalTimer = timer
     }
 
-    /// 重新评估 OKX 是否可达并据此调整源链。带 15 秒节流：
-    /// 网络抖动会连续触发多次路径变化，没必要每次都探。
+    /// 重新评估 OKX 是否可达并据此调整源链。
     private func reevaluateOKX() {
-        if let last = lastOKXProbeAt, Date().timeIntervalSince(last) < 15 { return }
+        // 短路一：已经在用 OKX —— 没有可切换的目标。
+        // 「OKX 自己掉线」由数据源心跳与停滞看门狗负责发现，不依赖这里的探测。
+        if currentSource is OKXFuturesWebSocketSource { return }
+
+        // 短路二：处于失败冷却期内，即便探测到可达也不会切（见 okxLastFailureAt），
+        // 直接省掉这段无意义的探测。
+        if let lastFail = okxLastFailureAt,
+           Date().timeIntervalSince(lastFail) < Self.okxSwitchCooldown {
+            return
+        }
+
+        // 节流：网络抖动会连续触发多次路径变化，没必要每次都探（阈值小于 5 秒定期，
+        // 保证定期探测不会被自己的节流挡掉）
+        if let last = lastOKXProbeAt, Date().timeIntervalSince(last) < 3 { return }
         lastOKXProbeAt = Date()
 
         let generation = probeGeneration
