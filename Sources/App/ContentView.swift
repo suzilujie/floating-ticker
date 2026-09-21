@@ -146,6 +146,7 @@ struct ContentView: View {
         PiPController.shared.start()
         market.start()
         AlertEngine.shared.start()
+        LiveActivityController.shared.start()
         refreshLog()
     }
 

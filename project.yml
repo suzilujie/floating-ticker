@@ -18,11 +18,18 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 
 targets:
+
+  # ---- 主 App ----
   FloatingTicker:
     type: application
     platform: iOS
     sources:
       - path: Sources
+    dependencies:
+      # 实时活动（Live Activity）的 UI 必须住在 Widget Extension 里，故需此独立 target。
+      # embed: true 会把 .appex 打进 App 的 PlugIns 目录。
+      - target: FloatingTickerWidget
+        embed: true
     settings:
       base:
         PRODUCT_NAME: FloatingTicker
@@ -35,6 +42,30 @@ targets:
         GENERATE_INFOPLIST_FILE: "NO"
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+
+  # ---- 实时活动 Widget 扩展 ----
+  # 注意：这是一个**独立 bundle**，需要自己的 provisioning profile（各自签名）。
+  FloatingTickerWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widget
+      # 与主 App 共享数据模型 —— 两端都要能编译这个文件
+      - path: Sources/LiveActivity/TickerActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_NAME: FloatingTickerWidget
+        # 必须为主 App bundle id 的「前缀 + .后缀」形式，
+        # 系统据此认定扩展属于哪个 App（写错会导致安装/识别失败）。
+        PRODUCT_BUNDLE_IDENTIFIER: com.xfish.floatingticker.widget
+        DEVELOPMENT_TEAM: "S2GX2R7LD5"
+        INFOPLIST_FILE: Widget/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1"
+        # 扩展不单独安装，随主 App 一起打包
+        SKIP_INSTALL: "YES"
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
 

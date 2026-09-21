@@ -14,31 +14,18 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<!-- 扩展的包类型固定为 XPC! -->
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<!-- 画中画（Picture-in-Picture）会话需要在后台存活，
-	     否则 App 切到后台后 PiP 会被回收、价格停止刷新 -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
-	<!-- 开启实时活动（Live Activity）：让行情显示在锁屏与灵动岛。
-	     注：这个开关属于**主 App**（不是 Widget 扩展） -->
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<!-- 声明这是一个 WidgetKit 扩展（实时活动的 UI 就住在这里） -->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
 </dict>
 </plist>

@@ -39,6 +39,13 @@ final class TickerStore: ObservableObject {
     /// `private(set)`，其投影值跨文件访问存在版本差异风险；回调更直白也更好测。
     var onSnapshot: ((TickerSnapshot) -> Void)?
 
+    /// 每笔行情的**多播**通道。
+    ///
+    /// 为什么需要它：`onSnapshot` 是单播闭包（已被报警引擎占用），而实时活动
+    /// 等附加消费者同样需要这份行情。用 Combine 的 Subject 做多播，
+    /// 各消费者互不覆盖（谁想加就订阅，不用改这里）。
+    let tickPublisher = PassthroughSubject<TickerSnapshot, Never>()
+
     /// 数据源切换通知（携带新源名）。
     ///
     /// 为什么需要：不同交易所有基差（basis，实测 CoinEx 77879 / Gate 77935 /
@@ -173,6 +180,7 @@ final class TickerStore: ObservableObject {
                 self.lastTickAt = snapshot.updatedAt
                 self.restartCount = 0            // 数据回来了，清空自愈计数
                 self.onSnapshot?(snapshot)
+                self.tickPublisher.send(snapshot)   // 多播：实时活动等附加消费者
             }
         }
 
