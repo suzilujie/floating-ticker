@@ -368,13 +368,25 @@ iPhone 上运行（证书 7 天有效）
 <table>
 <thead><tr><th>项</th><th>策略</th></tr></thead>
 <tbody>
-<tr><td>心跳超时</td><td>5 秒无 tick 判定异常</td></tr>
-<tr><td>降级触发</td><td>异常持续 10 秒 → 切换下一层</td></tr>
-<tr><td>重连退避</td><td>指数退避（exponential backoff）：1s → 2s → 4s → 8s → 16s → 30s 封顶</td></tr>
-<tr><td>恢复策略</td><td>切到某层成功后，每 5 分钟探测上一层，可用则回切（prefer-higher-tier）</td></tr>
-<tr><td>可观测性</td><td>App 内显示当前数据源、最近延迟、切换日志</td></tr>
+<tr><td>停滞判定</td><td>10 秒无任何推送判定停滞（正常约每秒一条）</td></tr>
+<tr><td>自愈动作</td><td>停滞 → 重建当前源；连续重建 2 次无效 → 切换下一层；<b>到底后回绕链首</b>继续重试（永不放弃）</td></tr>
+<tr><td>恢复冷却</td><td>10 秒 —— 真正断网时避免高频重连（省电）</td></tr>
+<tr><td>连接级心跳</td><td>WebSocket 源每 15 秒发协议级 <code>ping</code>，把「半死连接」暴露为失败</td></tr>
+<tr><td>网络恢复</td><td><code>NWPathMonitor</code> 检测到网络由「不可达」恢复 → 立即重建（绕过冷却）</td></tr>
+<tr><td>回到前台</td><td>App 回到前台（含锁屏解锁）→ 立即核对新鲜度，停滞则立即自愈</td></tr>
+<tr><td>可观测性</td><td>App 内显示当前数据源、推送次数、最后推送时间与完整切换日志</td></tr>
 </tbody>
 </table>
+
+<div class="card">
+<b>为什么不能只靠「失败才降级」——本条来自真机故障</b><br>
+现象：<b>锁屏回来后行情不再更新</b>。<br>
+根因：锁屏 / 后台时 iOS 会静默掐断 TCP（NAT 超时），而客户端正阻塞在 <code>receive()</code>，
+<b>收不到任何 error</b> —— 连接进入「半死」状态：既不报失败，也永远收不到数据。
+若降级只挂在「源主动报 failed」上，就会永久卡死。<br>
+本版把<b>数据停滞看门狗</b>设为总指挥：它不关心失效原因（半死连接、服务器无推送、切换网络丢连接），
+只要「没有数据」就一路 重建 → 降级 → 回绕，直到恢复。协议级心跳用于尽早把半死连接暴露出来，加速恢复。
+</div>
 
 <blockquote>
 <p><b>选型注意</b>：L1 与 L2 同域，同域封禁时会同时失效，因此 L3 必须是<b>异构</b>（不同厂商、不同 CDN）的源才具兜底价值。</p>
@@ -758,7 +770,8 @@ jobs:
 <tr><td>R14</td><td>报警音在用户"媒体音量"过低时形同虚设</td><td>中</td><td class="warn">中</td><td>无法强制音量；缓解：界面提示，并在触发时同时给出强视觉闪烁（视觉不依赖音量）</td></tr>
 <tr><td>R15</td><td>跨源基差导致切换瞬间触发误报</td><td class="ok">已解决</td><td>低</td><td>切源时经 <code>onSourceChanged</code> 通知报警引擎，首笔快照仅作基准价、不参与穿越判定（见 4.6）</td></tr>
 <tr><td>R16</td><td>OKX 长连接因缺少保活被服务端断开（表现为"连上约半分钟后莫名降级"）</td><td>低</td><td class="warn">中</td><td>源内 20 秒定时发 <code>ping</code>；真断链仍由 receive 失败暴露并自动降级到 Gate</td></tr>
-<tr><td>R17</td><td>可达性探测仅启动时执行一次，会话中途开关 VPN 不重排优先级</td><td>中</td><td>低</td><td>已知边界：重启 App 生效；后续可用 <code>NWPathMonitor</code> 监听路径变化后重探（可选增强）</td></tr>
+<tr><td>R17</td><td>可达性探测仅启动时执行一次，会话中途开关 VPN 不重排优先级</td><td>中</td><td>低</td><td>已知边界：重启 App 生效；<code>NWPathMonitor</code> 现已接入但仅用于连接自愈，尚未用于重探 OKX（可选增强）</td></tr>
+<tr><td>R18</td><td>锁屏 / 后台后连接「半死」，行情不再更新</td><td class="ok">已解决</td><td>高</td><td>真机复现并已修复：iOS 静默掐断 TCP 后 <code>receive()</code> 不回调 error，旧实现只看「源报失败」故永久卡死。本版改为「数据停滞看门狗」总指挥（重建 → 降级 → 回绕链首），叠加协议级心跳、NWPathMonitor、回到前台检查（见 4.3）</td></tr>
 </tbody>
 </table>
 

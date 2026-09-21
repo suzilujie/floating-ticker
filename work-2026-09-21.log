@@ -104,6 +104,60 @@
 ■ 后续注册顺序（用户侧，均在网页完成）
   1) Certificates, Identifiers & Profiles → Devices → 依次注册上述两台
   2) Identifiers → 注册 App ID：com.xfish.floatingticker
+
+--------------------------------------------------------------------------------
+[2026-09-21] 阶段四：行情永续自愈（锁屏回来行情不更新 → 全链路自我修复）
+--------------------------------------------------------------------------------
+
+■ 需求
+  用户要求：只要 App 开着就要一直更新行情，除非网络断了或手机关机。
+
+■ 真机故障与根因
+  现象：锁屏回来后行情不再更新。
+  根因：锁屏 / 后台时 iOS 静默掐断 TCP（NAT 超时），而客户端正阻塞在 receive()，
+        收不到任何 error —— 连接进入「半死」状态：不报失败，也永远收不到数据。
+  旧实现的三处缺口：
+    1) 看门狗只写一行日志「疑似中断」，不做任何恢复动作
+    2) 降级只挂在 onState(.failed) 上，半死不报 failed 就永久卡死
+    3) 全链只有 OKX 有文本 ping 且失败不报错；Gate 源完全没有心跳
+
+■ 修复设计：四层守卫（不依赖单一机制，互为兜底）
+  ① 数据停滞看门狗（总指挥）
+     - 10 秒无 tick 判定停滞 → 重建当前源
+     - 连续重建 2 次无效 → 切换下一层
+     - 到底后「回绕链首」继续重试（永不放弃，解决旧实现「已无更低层级可降级」的终态卡死）
+     - 恢复冷却 10 秒，避免真断网时高频重连（省电）
+     - 关键细节：参考时刻取 max(最后数据时间, 本源激活时刻)，
+       使「刚切源还没连上」有宽限期，不误判；恢复计数只在真正收到数据时清零
+  ② 连接级心跳：Gate / OKX 两个 WS 源每 15 秒发协议级 ping，
+     失败即上报 .failed —— 把「半死连接」尽早暴露（这是识破半死的关键）
+  ③ 网络监听：NWPathMonitor，网络由不可达恢复为可达时立即重建（绕过冷却）
+  ④ 回到前台检查：scenePhase 变 active（含锁屏解锁）→ 立即核对新鲜度，停滞则立即自愈
+
+■ 顺带修复：回调线程归拢
+  TickerStore 把 onTick / onState 统一 DispatchQueue.main.async 到主线程后再改状态。
+  原先 URLSession 回调在后台队列，直接改 @Published 属性属线程安全隐患。
+
+■ 修改文件
+  Sources/Market/TickerStore.swift                 自愈闭环核心（看门狗升级、网络监听、
+                                                   checkFreshness、moveToNextSource 回绕、主线程归拢）
+  Sources/Market/GateFuturesWebSocketSource.swift  新增 15s 协议级心跳
+  Sources/Market/OKXFuturesWebSocketSource.swift   新增 15s 协议级心跳（文本 ping 保留）
+  Sources/App/ContentView.swift                    scenePhase == .active 时触发 checkFreshness
+
+■ 影响范围
+  仅行情层的恢复策略；数据源协议未变，源仍可插拔；渲染与报警逻辑未动。
+
+■ 待真机验证
+  1) 锁屏 1~2 分钟后解锁：应在 10~20 秒内自动恢复更新
+  2) 断网再恢复：网络恢复后应立即重建（日志「网络已恢复 → 立即重建当前源」）
+  3) 长时间后台：观察日志中是否出现「N 秒无数据 → 重建 / 切换 / 回绕」的自愈轨迹
+  4) 回到 App 前台：应触发一次新鲜度检查，价格立即刷新
+
+■ 风险登记册
+  新增 R18（锁屏 / 后台连接半死）—— 标记为已解决。
+  设计文档 4.3 节已改写为实际的健康检查与自愈策略，R17 说明同步更新。
+================================================================================
   3) App Store Connect → 生成 API 密钥（App Manager），下载 .p8
   4) 填入 GitHub Secrets：ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8
   5) 仓库 Settings → Pages → Source 选 gh-pages 分支根目录
