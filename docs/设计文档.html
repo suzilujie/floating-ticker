@@ -588,6 +588,30 @@ AVPictureInPictureController → 系统悬浮窗</code></pre>
 <li>悬浮条底色：深色半透明（与系统 PiP 深色底一致）</li>
 </ul>
 
+<h3 id="pip-keepalive">5.3 后台存活与音频保活（2026-09-21）</h3>
+
+<p><b>问题（真机实测）</b>：锁屏后行情停止更新，且解锁后 <b>&gt;30 秒</b>仍不恢复。这说明锁屏时 <b>App 进程被 iOS 挂起</b> —— 定时器停、网络停，此前的自愈体系（停滞看门狗、心跳、重连）根本<b>没有机会运行</b>。</p>
+
+<div class="card">
+<b>关键结论：PiP 会话本身不足以在「锁屏」态维持 App 运行。</b><br>
+PiP 能让 App「后台活着」，但锁屏是更严格的系统状态；进入锁屏后 App 仍可能被挂起，
+于是依赖定时器的自愈机制全部失效。这解释了为什么之前修好了自愈、锁屏问题却依旧存在。
+</div>
+
+<p><b>解法：音频保活</b>（<code>Sources/PiP/KeepAliveAudio.swift</code>）</p>
+<table>
+<thead><tr><th>项</th><th>做法</th><th>原因</th></tr></thead>
+<tbody>
+<tr><td>原理</td><td>循环播放一段<b>完全静音</b>的 PCM</td><td>iOS 对「正在播放音频」的 App 给予<b>持续后台执行权</b>，锁屏时不被挂起</td></tr>
+<tr><td>关键细节</td><td>用静音的「<b>数据</b>」（PCM 全 0），而不是把播放器音量设为 0</td><td>音量设 0 时系统可能直接跳过渲染，保活就会失效；播静音数据时渲染管线是真在跑的</td></tr>
+<tr><td>音频格式</td><td>16bit 单声道 8kHz WAV，程序合成（1 秒，循环）</td><td>保活只需「有音频在渲染」，音质无关紧要；8kHz 让缓冲区仅 16KB</td></tr>
+<tr><td>生命周期</td><td>随 PiP 启停：PiP 启动时开播；用户主动关浮窗时停止</td><td>保活的意义是「浮窗活着时锁屏也能继续更新」；浮窗都关了就没必要继续耗电</td></tr>
+<tr><td>前置条件</td><td><code>Info.plist</code> 的 <code>UIBackgroundModes</code> 含 <code>audio</code></td><td>此前为 PiP 已配置，本次无需改动</td></tr>
+</tbody>
+</table>
+
+<p><b>代价</b>：持续播放音频会增加耗电；控制中心 / 状态栏可能显示「正在播放」。属可接受的代价——否则锁屏即停摆。</p>
+
 <h2 id="architecture">6. 应用架构</h2>
 
 <pre><code>FloatingTicker/
@@ -1059,6 +1083,7 @@ xcodebuild -exportArchive（method=ad-hoc）
 <a href="#pip">5. PiP 渲染管线</a>
 <a class="sub" href="#pip-keypoints">5.1 关键实现点</a>
 <a class="sub" href="#pip-color">5.2 配色规范</a>
+<a class="sub" href="#pip-keepalive">5.3 后台存活与保活</a>
 <a href="#architecture">6. 应用架构</a>
 <a class="sub" href="#architecture-layers">6.1 分层职责</a>
 <a href="#ci">7. CI 流水线</a>
