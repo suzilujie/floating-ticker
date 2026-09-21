@@ -845,7 +845,7 @@ COOLDOWN（冷却）     默认 1 分钟内不再触发（界面可改），从"
 <ol>
 <li>登录 <code>appstoreconnect.apple.com</code> → <b>接受新版协议</b>（Agreements, Tax, and Banking）。<b>不做这一步，构建无法上传</b></li>
 <li>建 App 记录：我的 App → ＋ → 平台 iOS → Bundle ID 必须选 <code>com.xfish.floatingticker</code> → SKU 随意</li>
-<li>生成 API 密钥：用户和访问 → 集成 → App Store Connect API → 密钥 → ＋ → 角色选 <b>App Manager</b> → 下载 <code>.p8</code>，记下 Key ID 与 Issuer ID</li>
+<li>生成 API 密钥：用户和访问 → 集成 → App Store Connect API → 密钥 → ＋ → 角色选 <b>Admin</b>（<b>不要选 App Manager</b>：会缺「云托管分发证书」权限导致导出失败，见第 15 章坑二）→ 下载 <code>.p8</code>，记下 Key ID 与 Issuer ID</li>
 <li>把上述值填入 GitHub 仓库 Secrets</li>
 </ol>
 
@@ -861,6 +861,70 @@ COOLDOWN（冷却）     默认 1 分钟内不再触发（界面可改），从"
 <tr><td>Ad Hoc 备选</td><td>付费账号同时具备 Ad Hoc 分发能力：把设备 UDID 加入描述文件，通过 HTTPS 链接安装，<b>1 年有效且无需审核</b>；代价是要手工维护 UDID、且没有自动更新提示</td></tr>
 </tbody>
 </table>
+
+<h2 id="adhoc">15. Ad Hoc 分发（OTA 网页安装）</h2>
+
+<p>付费账号同时具备 <b>Ad Hoc 分发</b>能力：签名包通过 HTTPS 链接安装到白名单设备，<b>无需审核、约 1 年有效</b>。本项目已于 2026-09-21 把这条链路完整跑通，作为 TestFlight 之外的第二分发通道，适合「给自己 / 固定几台设备长期安装」的场景。</p>
+
+<h3 id="adhoc-compare">15.1 与 TestFlight 的取舍</h3>
+<table>
+<thead><tr><th>维度</th><th>Ad Hoc（OTA 网页安装）</th><th>TestFlight</th></tr></thead>
+<tbody>
+<tr><td>安装方式</td><td>Safari 打开 <code>itms-services://</code> 链接</td><td>TestFlight App 内点安装</td></tr>
+<tr><td>有效期</td><td class="ok">约 1 年</td><td>90 天（但 CI 每次 push 自动续）</td></tr>
+<tr><td>审核</td><td class="ok">无</td><td>内部测试员无需 / 外部需审核</td></tr>
+<tr><td>设备管理</td><td class="no">需手工维护 UDID 白名单</td><td class="ok">登录即可，无白名单</td></tr>
+<tr><td>更新</td><td class="no">无提示，需重新点链接</td><td class="ok">有更新提示，点一下即可</td></tr>
+<tr><td>适用场景</td><td>给自己 / 固定几台设备长期装</td><td>快速迭代、多设备分发</td></tr>
+</tbody>
+</table>
+
+<h3 id="adhoc-pipeline">15.2 流水线（<code>.github/workflows/ad-hoc.yml</code>）</h3>
+<pre><code>push 到 main
+      ↓
+凭据检查（三件套任一缺失 → 安全跳过，CI 保持绿）
+      ↓
+xcodegen 生成工程 → 注入构建指纹 → 写入 API 密钥
+      ↓
+密钥自检（诊断步骤：openssl 解析私钥 + 构造 JWT 直连 Apple API）
+      ↓
+xcodebuild archive（Release，自动签名）
+      ↓
+xcodebuild -exportArchive（method=ad-hoc）
+      ↓
+生成 manifest.plist → 发布到 gh-pages → 上传 artifact</code></pre>
+
+<h3 id="adhoc-pitfalls">15.3 三个关键坑（2026-09-21 实测踩坑记录）</h3>
+
+<div class="card">
+<b>坑一：401 认证失败 = 三件套「配对」错位，而非格式错误</b><br>
+现象：<code>archive</code> 阶段 <code>listTeams.action</code> 返回 401，连带报 <code>No profiles ... were found</code>。<br>
+定位：加「密钥自检」步骤——<code>openssl ec</code> 解析私钥、核对 Key ID / Issuer ID 长度、构造 JWT 直连 <code>api.appstoreconnect.apple.com</code> 看返回码。<br>
+根因：Key ID / Issuer ID / p8 三者<b>不是同一把钥匙的三个零件</b>（从旧账号 / 旧 key 串了值）。<br>
+解法：三值必须<b>同源</b>——Issuer ID 取「用户和访问 → 集成 → App Store Connect API」页面<b>顶部</b>；Key ID 与 p8 必须来自<b>同一把</b> key（新建的那把）。
+</div>
+
+<div class="card">
+<b>坑二：<code>Cloud signing permission error</code> = 密钥缺「云托管分发证书」权限</b><br>
+现象：<code>archive</code> 成功，但 <code>exportArchive</code> 报 <code>Cloud signing permission error</code>，进而 <code>No profiles</code>。<br>
+根因：cloud signing 需要密钥具备「<b>Access to Cloud Managed Distribution Certificate</b>」权限；App Manager 角色并不够。且 App Store Connect 页面明示「Keys don't expire, but <b>can't be modified</b> to access more services once created」——<b>密钥创建后权限不可改</b>。<br>
+解法：<b>吊销重建</b>，Access 选 <b>Admin</b>（Admin 自带该权限），重新下载 p8、更新 Secrets（Issuer ID 不变）。
+</div>
+
+<div class="card">
+<b>坑三：构建全绿但安装链接 404 = GitHub Pages 未启用</b><br>
+现象：workflow 全部 success（含 <code>Publish to GitHub Pages</code>），但访问 <code>manifest.plist</code> / <code>.ipa</code> 都是 404。<br>
+根因：<code>peaceiris/actions-gh-pages</code> 只是把文件推到 <code>gh-pages</code> 分支，<b>仓库未启用 Pages 就不会部署站点</b>。<br>
+解法：仓库 Settings → Pages → Source 选「Deploy from a branch」→ Branch 选 <code>gh-pages</code> / <code>(root)</code> → Save，约 1~2 分钟生效。
+</div>
+
+<h3 id="adhoc-install">15.4 安装方式</h3>
+<ol>
+<li>手机 <b>Safari</b> 打开 <code>itms-services://?action=download-manifest&amp;url=https://&lt;owner&gt;.github.io/&lt;repo&gt;/manifest.plist</code>（本项目为 <code>suzilujie.github.io/floating-ticker/manifest.plist</code>）</li>
+<li>点「安装」→ 桌面出现图标</li>
+<li>首次打开被拦：设置 → 通用 → VPN 与设备管理 → 信任开发者证书</li>
+</ol>
+<p>安装失败的两种典型：提示「无法安装 App」= 设备 UDID 未注册进 Devices；提示「无法验证 App」= 证书未信任（走上面第 3 步）。</p>
 
 <h2 id="appendix">附录 A：探测脚本</h2>
 <p>项目 <code>scripts/</code> 目录下四个 PowerShell 探测脚本，用于后续数据源复检（行情源可达性会随时间变化）：</p>
@@ -906,6 +970,9 @@ COOLDOWN（冷却）     默认 1 分钟内不再触发（界面可改），从"
 <a href="#milestones">10. 里程碑</a>
 <a href="#risks">11. 风险登记册</a>
 <a href="#todo">12. 待确认事项</a>
+<a href="#alert">13. 价格报警</a>
+<a href="#testflight">14. TestFlight 分发</a>
+<a href="#adhoc">15. Ad Hoc 分发</a>
 <a href="#appendix">附录 A 探测脚本</a>
 </aside>
 
