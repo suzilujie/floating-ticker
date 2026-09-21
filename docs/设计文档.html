@@ -490,7 +490,7 @@ OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致�
 <tr><td>探针端点</td><td><code>GET https://www.okx.com/api/v5/public/time</code></td><td>无参数、响应体最小；不用行情接口是为了避开频控（rate limit）</td></tr>
 <tr><td>超时</td><td>3 秒</td><td>代理链路首次 TLS 握手偏慢（实测 OKX REST 经代理约 1.5s），但超过 3 秒才响应的话，作为实时行情源已无意义</td></tr>
 <tr><td>判定规则</td><td>无错误 + HTTP 200 + 业务码 <code>"0"</code></td><td>三者缺一不可：被劫持时常见「HTTP 200 但响应体不是预期结构」，只看状态码会误判</td></tr>
-<tr><td>触发时机</td><td>仅 <code>TickerStore.start()</code> 执行一次</td><td>成本极低（几 KB）；「当前网络能否通 OKX」在一次会话内基本稳定</td></tr>
+<tr><td>触发时机</td><td><b>四处</b>：启动 / <b>网络路径变化</b>（开关 VPN 必走）/ <b>定期 60 秒</b>兜底 / <b>回到前台</b></td><td>成本极低（几 KB）。「当前网络能否通 OKX」会随开关 VPN 翻转，故不能只探一次（原「仅启动探测」已被真机问题推翻，见本节末尾）</td></tr>
 </tbody>
 </table>
 
@@ -502,7 +502,12 @@ OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致�
  ├─ 后台探测 OKX（3s 超时）
  │     ├─ 可达   → 把 OKX 插到链首并立即切换 → 优先使用 OKX 永续 WS
  │     └─ 不可达 → 保持 Gate 链（日志记录判定依据与耗时）
- └─ 心跳看门狗启动（5s 粒度，仅记日志）</code></pre>
+ ├─ 心跳看门狗启动（5s 粒度，仅记日志）
+ └─ OKX 重评触发源启动
+       ├─ 网络路径变化（NWPathMonitor，开关 VPN 必走）
+       ├─ 定期 60 秒（兜底：部分 TUN 模式 VPN 不改路径状态，回调可能不触发）
+       └─ 回到前台（用户很可能刚在外面开关过 VPN）
+             ↓ 15 秒节流后重探，结果与现状一致则不动</code></pre>
 
 <h4>优先级链（failover chain）</h4>
 
@@ -525,7 +530,15 @@ OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致�
 </ol>
 
 <blockquote>
-<p><b>已知边界（Known Limitation）</b>：探测<b>只在启动时执行一次</b>。会话中途开关 VPN 不会重排优先级，需重启 App 才生效；若需实时响应网络变化，可接入 <code>NWPathMonitor</code> 监听路径变化后重探（属后续可选增强，本轮未做）。</p>
+<p><b>动态重评（2026-09-21 补齐；原「仅启动探测一次」的限制已被真机问题推翻）</b></p>
+<p>真机现象：<b>关闭 VPN 切到了 Gate，再打开 VPN 却不切回 OKX</b>（OKX 挂代理时才是最快的源）。根因正是「探测只做一次」。</p>
+<p>现改为三处触发重评，统一走 <code>applyOKXAvailability</code>：</p>
+<ul>
+<li><b>网络路径变化</b>（<code>NWPathMonitor</code>）：开关 VPN 必改路由，是最关键的触发点</li>
+<li><b>定期 60 秒</b>兜底：部分 TUN 模式 VPN 只改接口层、不改路径状态，回调可能不触发</li>
+<li><b>回到前台</b>：用户很可能刚在外面开关过 VPN</li>
+</ul>
+<p>判定与动作：<b>可达且链上无 OKX</b> → 提为链首并切换；<b>不可达且链上有 OKX</b> → 从链上移除（若正在用则立即切回 Gate 链，不必等看门狗）；<b>结果与现状一致</b> → 不动，避免无谓切源让价格跳变。重评带 15 秒节流，定期重评不写日志（否则会刷满环形日志、冲掉更要紧的自愈记录）。</p>
 </blockquote>
 
 <h2 id="pip">5. PiP 渲染管线</h2>
@@ -770,7 +783,7 @@ jobs:
 <tr><td>R14</td><td>报警音在用户"媒体音量"过低时形同虚设</td><td>中</td><td class="warn">中</td><td>无法强制音量；缓解：界面提示，并在触发时同时给出强视觉闪烁（视觉不依赖音量）</td></tr>
 <tr><td>R15</td><td>跨源基差导致切换瞬间触发误报</td><td class="ok">已解决</td><td>低</td><td>切源时经 <code>onSourceChanged</code> 通知报警引擎，首笔快照仅作基准价、不参与穿越判定（见 4.6）</td></tr>
 <tr><td>R16</td><td>OKX 长连接因缺少保活被服务端断开（表现为"连上约半分钟后莫名降级"）</td><td>低</td><td class="warn">中</td><td>源内 20 秒定时发 <code>ping</code>；真断链仍由 receive 失败暴露并自动降级到 Gate</td></tr>
-<tr><td>R17</td><td>可达性探测仅启动时执行一次，会话中途开关 VPN 不重排优先级</td><td>中</td><td>低</td><td>已知边界：重启 App 生效；<code>NWPathMonitor</code> 现已接入但仅用于连接自愈，尚未用于重探 OKX（可选增强）</td></tr>
+<tr><td>R17</td><td>会话中途开关 VPN 后源优先级不重排（关闭 VPN 切走了、打开 VPN 却不切回最快源）</td><td class="ok">已解决</td><td>低</td><td>三处触发 OKX 重评：<b>网络路径变化</b>（开关 VPN 必走）/ <b>定期 60 秒</b>兜底 / <b>回到前台</b>。可达则提为首选并切换，不可达则从链上移除；结果与现状一致则不动（避免无谓切源让价格跳变）。开关 VPN 后最迟 1 分钟内自动切到最快源</td></tr>
 <tr><td>R18</td><td>锁屏 / 后台后连接「半死」，行情不再更新</td><td class="ok">已解决</td><td>高</td><td>真机复现并已修复：iOS 静默掐断 TCP 后 <code>receive()</code> 不回调 error，旧实现只看「源报失败」故永久卡死。本版改为「数据停滞看门狗」总指挥（重建 → 降级 → 回绕链首），叠加协议级心跳、NWPathMonitor、回到前台检查（见 4.3）</td></tr>
 </tbody>
 </table>
