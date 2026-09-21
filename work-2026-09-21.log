@@ -92,4 +92,20 @@
   - 我侧：验证 ad-hoc.yml 跑通后，再据实修订设计文档第 14 章为 Ad Hoc 版本
     （当前第 14 章仍描述 TestFlight，属于待更新的过时内容）
 
+--------------------------------------------------------------------------------
+[2026-09-21] 阶段三：两台设备 UDID 集齐
+--------------------------------------------------------------------------------
+
+■ 设备清单（Ad Hoc 白名单需要全部注册进 Devices）
+  测试机 iPhone 17        UDID 00008150-001889201E8A401C
+  主力机 iPhone 17 Pro Max UDID 00008150-0008589E2278401C
+  说明：主力机 UDID 通过远程方式获取（Safari 配置描述文件方式）。
+
+■ 后续注册顺序（用户侧，均在网页完成）
+  1) Certificates, Identifiers & Profiles → Devices → 依次注册上述两台
+  2) Identifiers → 注册 App ID：com.xfish.floatingticker
+  3) App Store Connect → 生成 API 密钥（App Manager），下载 .p8
+  4) 填入 GitHub Secrets：ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8
+  5) 仓库 Settings → Pages → Source 选 gh-pages 分支根目录
+
 ================================================================================

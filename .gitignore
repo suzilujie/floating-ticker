@@ -15,3 +15,8 @@ _artifacts/
 
 # 编辑器
 .vscode/settings.json
+
+# Apple 开发者私钥与分发资料（本地专用，严禁提交到公开仓库）
+# .p8 是 App Store Connect API 的私钥，泄露即等于账号失守
+*.p8
+appleImportDocs/
