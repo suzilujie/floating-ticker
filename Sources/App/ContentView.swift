@@ -124,10 +124,17 @@ struct ContentView: View {
             startIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // 回到前台（含锁屏解锁）立即核对数据新鲜度：后台期间连接可能已被静默掐断，
-            // 这一步让用户一眼就看到最新价格，而不用干等看门狗的下一个周期。
-            if newPhase == .active {
+            switch newPhase {
+            case .active:
+                // 回到前台（含锁屏解锁）立即核对数据新鲜度：后台期间连接可能已被静默掐断，
+                // 这一步让用户一眼就看到最新价格，而不用干等看门狗的下一个周期。
+                // 同时汇报后台期间的实时活动更新次数——排查「锁屏后冻住」的关键证据。
+                LiveActivityController.shared.noteAppState(isActive: true)
                 market.checkFreshness()
+            case .background:
+                LiveActivityController.shared.noteAppState(isActive: false)
+            default:
+                break
             }
         }
     }

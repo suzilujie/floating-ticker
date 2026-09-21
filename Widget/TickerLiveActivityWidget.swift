@@ -122,8 +122,10 @@ private struct LockScreenCard: View {
                 Text(TickerLiveActivityWidget.changeText(context.state.changePercent))
                     .font(.headline.monospacedDigit())
                     .foregroundStyle(TickerLiveActivityWidget.changeColor(context.state.changePercent))
-                Text(context.state.updatedAt, style: .time)
-                    .font(.caption2)
+                // 精确到秒：锁屏上一眼就能看出「最后更新是几秒前，还是几分钟前」。
+                // 排查「数字冻住」这类问题时，这个时间戳就是设备端的地面真相。
+                Text(context.state.updatedAt, format: .dateTime.hour().minute().second())
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
