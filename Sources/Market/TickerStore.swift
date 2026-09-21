@@ -83,6 +83,15 @@ final class TickerStore: ObservableObject {
     /// 定期重评 OKX 的定时器：兜住「网络形态变了但 NWPathMonitor 未回调」的情况
     private var okxReevalTimer: Timer?
 
+    /// OKX 最近一次连接失败的时刻。
+    ///
+    /// 用于「只要 OKX 可达就用 OKX」这条策略的**防横跳冷却**：
+    /// 可达性探测走 REST（`www.okx.com`），实际使用的是 WS（`ws.okx.com:8443`），
+    /// 代理分流规则可能只放行其中一个 —— 若不加冷却，就会出现
+    /// 「切到 OKX → WS 连不上降级到 Gate → 探测又说可达 → 又切回 OKX」的反复横跳。
+    private var okxLastFailureAt: Date?
+    private static let okxSwitchCooldown: TimeInterval = 120
+
     private init() {}
 
     // MARK: - 对外接口
@@ -121,6 +130,7 @@ final class TickerStore: ObservableObject {
         okxReevalTimer?.invalidate()
         okxReevalTimer = nil
         lastOKXProbeAt = nil
+        okxLastFailureAt = nil
         lastRecoveryAt = nil
         restartCount = 0
         state = .idle
@@ -172,6 +182,10 @@ final class TickerStore: ObservableObject {
                 guard self.currentSource === source else { return }
                 self.state = newState
                 if case .failed(let reason) = newState {
+                    // 记录 OKX 的失败时刻，供「可达就切回」的防横跳冷却使用
+                    if source is OKXFuturesWebSocketSource {
+                        self.okxLastFailureAt = Date()
+                    }
                     self.attemptRecovery(reason: "连接失败（\(reason)）")
                 }
             }
@@ -349,15 +363,47 @@ final class TickerStore: ObservableObject {
     /// - 可达且链上还没有 OKX → 提升为首选并切换过去
     /// - 不可达且链上有 OKX → 从链上移除（若正在用则立即切回 Gate 链）
     /// - 结果与现状一致 → 什么都不做（避免无谓的源切换，切换会让价格跳一下）
+    /// 根据 OKX 可达性调整源链。
+    ///
+    /// 策略（用户要求）：**只要 OKX 可达，就应该用 OKX** —— 因此除「可达则启用」外，
+    /// 还包含「OKX 已在链上、但当前没在用（曾失败被降级）→ 切回 OKX」。
     private func applyOKXAvailability(_ reachable: Bool, generation: Int) {
         guard probeGeneration == generation else { return }
 
         let okxPresent = sources.contains { $0 is OKXFuturesWebSocketSource }
-        if reachable, !okxPresent {
-            promoteOKXToPrimary()
-        } else if !reachable, okxPresent {
-            demoteOKX()
+        let okxActive = currentSource is OKXFuturesWebSocketSource
+
+        guard reachable else {
+            if okxPresent { demoteOKX() }
+            return
         }
+
+        // 防横跳：OKX 刚连接失败过时暂不切（详见 okxLastFailureAt 注释）
+        if let last = okxLastFailureAt, Date().timeIntervalSince(last) < Self.okxSwitchCooldown {
+            if !okxPresent {
+                LogCollector.shared.append("market: OKX 探测可达，但刚连接失败过，暂不启用")
+            } else if !okxActive {
+                LogCollector.shared.append("market: OKX 探测可达，但刚连接失败过，暂不切回")
+            }
+            return
+        }
+
+        if !okxPresent {
+            promoteOKXToPrimary()
+        } else if !okxActive {
+            switchToOKX()
+        }
+    }
+
+    /// OKX 已在源链上且探测可达，但当前用的是别的源 → 切回 OKX。
+    private func switchToOKX() {
+        guard let idx = sources.firstIndex(where: { $0 is OKXFuturesWebSocketSource }) else { return }
+        guard currentIndex != idx else { return }
+
+        LogCollector.shared.append("market: OKX 可达且当前未使用 → 切回 OKX 永续 WS")
+        currentSource?.stop()
+        currentIndex = idx
+        activateCurrentSource()
     }
 
     /// 把 OKX 插到源链首并立即切过去。

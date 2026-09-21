@@ -27,6 +27,13 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# 同一分支只保留一个 Ad Hoc 构建：两次构建若并发执行，会同时向 Apple 做
+# cloud signing（申请 / 复用证书与描述文件）而互相冲突 ——
+# 曾导致 Archive 阶段失败（提交 88f6c8e），而代码相同的 93d4ecb 却成功。
+concurrency:
+  group: ad-hoc-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
