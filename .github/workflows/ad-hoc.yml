@@ -99,6 +99,42 @@ jobs:
           echo "已写入密钥：$KEY_PATH"
           head -n 1 "$KEY_PATH"
 
+      - name: Diagnose API key
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          echo "=== 私钥文件第一行（应为 -----BEGIN PRIVATE KEY-----）==="
+          head -n 1 "$KEY_PATH"
+          echo "=== openssl 私钥解析 ==="
+          if openssl ec -in "$KEY_PATH" -noout 2>/tmp/openssl.err; then
+            echo "OK: 合法 EC 私钥"
+          else
+            echo "FAIL: 私钥解析失败 —— p8 的 base64 很可能没解对（可能存了原文而非 base64，或漏了头尾）"
+            cat /tmp/openssl.err
+          fi
+          echo "=== 长度核对 ==="
+          echo "KeyID 长度=${#KEY_ID}（App Store Connect 的 Key ID 应为 10 字符）"
+          echo "IssuerID 长度=${#ISSUER_ID}（应为 36 字符 UUID；若这里是 10 字符说明把 Team ID 当成 Issuer ID 了）"
+          echo "=== 构造 JWT 直连 Apple API 自检 ==="
+          b64u() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HEADER=$(printf '{"alg":"ES256","kid":"%s","typ":"JWT"}' "$KEY_ID" | b64u)
+          PAYLOAD=$(printf '{"iss":"%s","iat":%s,"exp":%s,"aud":"appstoreconnect-v1"}' "$ISSUER_ID" "$NOW" "$((NOW+1200))" | b64u)
+          SIG=$(printf '%s' "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign "$KEY_PATH" | b64u)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          CODE=$(curl -s -o /tmp/apple_resp.json -w '%{http_code}' 'https://api.appstoreconnect.apple.com/v1/apps' -H "Authorization: Bearer $JWT")
+          echo "HTTP 状态码=$CODE"
+          echo "响应:"; head -c 400 /tmp/apple_resp.json; echo
+          case "$CODE" in
+            200) echo "结论: 密钥完全有效，问题在别处" ;;
+            401) echo "结论: 认证失败(401) —— KeyID / IssuerID / p8 三者至少一个不匹配" ;;
+            403) echo "结论: 认证成功但无权限(403) —— key 缺少访问权限（需 Admin 或 App Manager 角色）" ;;
+            *) echo "结论: 其他状态 $CODE" ;;
+          esac
+
       - name: Archive (Release, automatic signing)
         if: steps.creds.outputs.configured == 'true'
         env:
