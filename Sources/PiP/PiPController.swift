@@ -79,6 +79,12 @@ final class PiPController: NSObject, ObservableObject {
         try? session.setActive(true)
         LogCollector.shared.append("start: audio session .playback")
 
+        // 后台保活：循环播放静音轨。
+        // 仅靠 PiP 不足以在「锁屏」态维持 App 运行 —— 真机实测：锁屏后行情停更、
+        // 解锁后 >30 秒不恢复，说明进程被挂起，自愈定时器根本没机会跑。
+        // 详见 KeepAliveAudio 的注释。
+        KeepAliveAudio.shared.start()
+
         // 显示层必须挂在窗口视图层级中，PiP 才能启动
         attachDisplayLayerIfNeeded()
 
@@ -159,6 +165,7 @@ final class PiPController: NSObject, ObservableObject {
         pipController?.stopPictureInPicture()
         framePump.stop()
         removeDisplayLayer()
+        KeepAliveAudio.shared.stop()
         isActive = false
         LogCollector.shared.append("stop: done")
     }
@@ -368,6 +375,8 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         restoreRequested = false
 
         guard shouldAutoRestart else {
+            // 用户主动关闭浮窗：不再需要后台保活（浮窗都没了，锁屏继续跑也没意义）
+            KeepAliveAudio.shared.stop()
             LogCollector.shared.append("pip: didStop（用户主动关闭浮窗）")
             return
         }
