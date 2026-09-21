@@ -19,8 +19,9 @@ import UIKit
 ///    → 本类订阅 `activityStateUpdates`，一旦发现 ended / dismissed 就**自动重建**
 ///      （见 `observeActivityState`），并留下日志。
 ///
-/// 取证日志：后台/锁屏期间每 `backgroundLogEvery` 次更新打一条（约 10 秒一条），
-/// 用来确证「锁屏时到底有没有在推」。真机排查这类问题时，这一条最关键 ——
+/// 取证：后台/锁屏期间的更新次数持续累计（见 `backgroundUpdateCount`），
+/// 由健康心跳（`HealthHeartbeat`）每 10 秒汇总成一行输出 —— 用来确证
+/// 「锁屏时到底有没有在推」。真机排查这类问题时，这一条最关键：
 /// 否则无法区分「App 没在更新」与「更新了但系统没用上」。
 final class LiveActivityController {
 
@@ -46,9 +47,6 @@ final class LiveActivityController {
 
     /// 重建周期：系统约 8 小时结束活动，这里提前到 7.5 小时重建，留安全余量。
     private static let recreateAfter: TimeInterval = 7.5 * 3600
-
-    /// 后台/锁屏时每多少次更新打一条日志（按 1 次/秒算约 10 秒一条）
-    private static let backgroundLogEvery = 10
 
     private init() {}
 
@@ -174,12 +172,18 @@ final class LiveActivityController {
 
     private static func describe(_ state: ActivityState) -> String {
         switch state {
-        case .active: return "active（活跃）"
-        case .stale: return "stale（已过期标记）"
-        case .ended: return "ended（已结束）"
-        case .dismissed: return "dismissed（被划掉）"
-        @unknown default: return "unknown"
+        case .active: return "活跃"
+        case .stale: return "已过期标记"
+        case .ended: return "已结束"
+        case .dismissed: return "被划掉"
+        @unknown default: return "未知状态"
         }
+    }
+
+    /// 诊断汇总（供健康心跳使用）：活动状态 + 后台期间累计更新次数。
+    var diagnosticState: String {
+        guard let activity = activity else { return "无活动" }
+        return "\(Self.describe(activity.activityState)) / 后台更新 \(backgroundUpdateCount) 次"
     }
 
     // MARK: - 更新
@@ -207,14 +211,11 @@ final class LiveActivityController {
         }
         lastUpdateAt = Date()
 
-        // 取证日志：后台/锁屏期间按秒推是被怀疑最多的环节，这里留下确凿证据
+        // 取证：累计后台/锁屏期间的更新次数，由健康心跳每 10 秒汇总成一行输出。
+        // 刻意不在这里单独打点 —— 心跳已经带出了这个计数，少一行噪音就能让
+        // 300 行环形缓冲多装些关键日志。
         if UIApplication.shared.applicationState != .active {
             backgroundUpdateCount += 1
-            if backgroundUpdateCount % Self.backgroundLogEvery == 0 {
-                LogCollector.shared.append(
-                    "live: 后台/锁屏更新中 第 \(backgroundUpdateCount) 次（price=\(String(format: "%.1f", price))）"
-                )
-            }
         }
 
         let state = TickerActivityAttributes.ContentState(

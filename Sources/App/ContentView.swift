@@ -154,6 +154,9 @@ struct ContentView: View {
         market.start()
         AlertEngine.shared.start()
         LiveActivityController.shared.start()
+        // 健康心跳：把「行情 / 报警检测 / 保活 / 实时活动」压成一行日志，
+        // 供无调试器时远程排查（锁屏冻住这类问题全靠它取证）
+        HealthHeartbeat.shared.start()
         refreshLog()
     }
 

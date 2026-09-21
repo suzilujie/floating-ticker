@@ -59,7 +59,16 @@ final class AlertEngine: ObservableObject {
     private var endTimer: Timer?
     private var hapticTimer: Timer?
     private var hapticTick = 0
-    private var lastPrice: Double?
+    /// 最近一笔行情价（诊断心跳会读取，用于显示「当前价」）
+    private(set) var lastPrice: Double?
+
+    /// 累计**评估**过的行情笔数（每来一笔行情 +1，无论最终是否触发）。
+    ///
+    /// 用途：健康心跳据此算出「这个窗口内检测了多少笔」。锁屏期间只要该值仍在增长，
+    /// 就证明报警引擎**仍在逐笔检测**、没有停摆 —— 这是排查「锁屏后报警不灵」
+    /// 时最关键的一个数。
+    private(set) var evaluationCount = 0
+
     /// 本次报警开始时间。用于识别浮窗暂停键的"误报停止"（见 PiPController）。
     private(set) var alertStartedAt: Date?
     /// 本次报警是否来自「试听」——试听是固定时长的演练，不影响实盘状态
@@ -140,6 +149,8 @@ final class AlertEngine: ObservableObject {
     // MARK: - 状态机
 
     private func handle(price: Double) {
+        evaluationCount += 1
+
         // 数据源刚切换：这笔只作为新基准价，不参与穿越判定（见 discardNextTick）
         if discardNextTick {
             discardNextTick = false
