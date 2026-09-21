@@ -108,4 +108,66 @@
   4) 填入 GitHub Secrets：ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8
   5) 仓库 Settings → Pages → Source 选 gh-pages 分支根目录
 
+--------------------------------------------------------------------------------
+[2026-09-21] 阶段四：数据源优先级自适应（探测 OKX 可达性，替代「检测 VPN」）
+--------------------------------------------------------------------------------
+
+■ 需求
+  用户提出：能否检测是否开了 VPN，若开了就优先走欧易（OKX），没开就走其它源。
+
+■ 方案评审（为什么否掉「检测 VPN」）
+  两条候选路径，用户选定 B：
+    A 检测 VPN / 代理状态：iOS 上测不准 ——
+      · TUN 模式 VPN（Shadowrocket / Surge / Clash 默认）不写系统代理键，
+        CFNetworkCopySystemProxySettings() 读不到；
+      · 第三方 VPN 的连接状态跨 App 不可读（NEVPNManager 只读本 App 自己的配置）；
+      · 枚举 utun* / ppp* 接口会被系统自身隧道（iCloud 私密代理、Wi-Fi Calling）误判；
+      · 状态 ≠ 能力：挂了代理但分流规则把 okx 域名走直连，照样不通。
+    B 可达性探测（reachability probe）：直接验证端点此刻是否可达 → 依据是事实而非推断。
+  用户回复「方案B」。
+  注：降级链是否保留 Gate 未单独确认，按建议默认保留（OKX 之后仍回 Gate）。
+
+■ 代码变更
+  新增 Sources/Market/SourceProbe.swift
+    - 探针 GET https://www.okx.com/api/v5/public/time（无参数、响应最小、不触频控）
+    - 超时 3s；判据 = 无错误 + HTTP 200 + 业务码 "0"（三者缺一不可，防劫持误判）
+    - 回调统一切主线程；结论与耗时写日志（probe: OKX 可达/不可达（xxxms，依据））
+  新增 Sources/Market/OKXFuturesWebSocketSource.swift
+    - wss://ws.okx.com:8443/ws/v5/public，订阅 tickers / BTC-USDT-SWAP
+    - 涨跌幅需自算：(last - open24h) / open24h × 100（与 CoinEx 源同一套算法）
+    - 保活：20s 定时发文本 ping（OKX 要求约 30s 内，留安全余量）——
+      不做的后果是「连上约半分钟后莫名降级」的假故障
+  修改 Sources/Market/TickerStore.swift
+    - start()：仍先启用 Gate 链（首帧不被探测等待阻塞），随后异步探测 OKX
+    - 新增 probeOKXAvailability / promoteOKXToPrimary：探测通过则把 OKX 插到链首并切换，
+      Gate 链整体保留在后作为兜底（OKX → Gate WS → Gate REST → CoinEx）
+    - 新增 probeGeneration 代次校验：源链重建后丢弃迟到的探测结果
+    - 新增 onSourceChanged 回调（保持依赖单向 Alert → Market）
+    - 启用日志增加「链上第 M/K」，避免两个 tier=1 造成误读
+  修改 Sources/Alert/AlertEngine.swift
+    - 订阅 onSourceChanged；新增 discardNextTick：切源后首笔快照仅作基准价，
+      不参与穿越判定 —— 否则跨源基差（约 0.09%）会凭空触发误报
+    - resetState() 一并清掉该标记
+
+■ 影响范围
+  Market 层内部闭环；渲染管线（TickerFrameRenderer / FramePump）、PiP 生命周期、
+  报警判定逻辑本身均未改动。协议 MarketDataSource 未变，源仍可插拔。
+
+■ 潜在风险（已登记进设计文档风险册）
+  R15 跨源基差误报 → 已解决（discardNextTick）
+  R16 OKX 长连接缺保活被断开 → 已处理（20s ping），真断链仍由 receive 失败触发降级
+  R17 探测仅启动执行一次，会话中途开关 VPN 不重排 → 已知边界，重启 App 生效，
+      后续可选接 NWPathMonitor 监听网络路径变化后重探
+
+■ 待真机验证
+  1) 直连环境：应显示 Gate 永续 WS，日志含「probe: OKX 不可达」
+  2) 代理环境：应在 1–3s 内切到 OKX 永续 WS，日志含「probe: OKX 可达」
+  3) 代理环境长连 3 分钟以上，确认无「莫名降级」（验证 ping 保活有效）
+  4) 切源瞬间确认无报警误触发（核对日志中的基准价记录）
+
+■ 文档同步
+  docs/设计文档.html：新增 4.6「源优先级自适应」；目录补 4.5 / 4.6 锚点；风险册加 R15–R17
+  docs/concepts.html：新增 4 个概念（可达性探测 / 自适应源优先级 / 跨源基差 / 连接保活），
+    并修正两处过时条目（公共数据域已作废、异构兜底所指源改为 CoinEx 永续）
+
 ================================================================================

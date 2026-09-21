@@ -67,6 +67,13 @@ final class AlertEngine: ObservableObject {
     /// 本次报警是否来自「试听」——试听结束不进冷却，不污染实盘状态
     private var isTest = false
 
+    /// 数据源切换后是否需要「吞掉」下一笔快照。
+    ///
+    /// 原因：跨源基差（basis）会让价格在切换瞬间跳变几十美元。若把这笔跳变
+    /// 当作真实行情参与穿越判定，可能凭空触发一次误报。故切源后先吞一笔，
+    /// 只把它记为新的基准价，从下一笔起恢复正常判定（见 handle(price:)）。
+    private var discardNextTick = false
+
     private init() {
         config = AlertConfig.load()
     }
@@ -87,6 +94,16 @@ final class AlertEngine: ObservableObject {
             // 行情源可能在任意线程回调，状态机与音频播放统一归拢到主线程
             DispatchQueue.main.async {
                 self?.handle(price: snapshot.last)
+            }
+        }
+
+        // 数据源切换时摘掉跨源跳变。
+        // 为什么必须做：不同交易所有基差（实测 CoinEx 77879 / Gate 77935 / OKX 77947），
+        // 切换源瞬间价格会跳变；若把这笔跳变当真实行情参与穿越判定，会凭空触发误报。
+        TickerStore.shared.onSourceChanged = { [weak self] name in
+            DispatchQueue.main.async {
+                LogCollector.shared.append("alert: 数据源切换为 \(name)，下一笔快照仅作基准价")
+                self?.discardNextTick = true
             }
         }
 
@@ -127,6 +144,16 @@ final class AlertEngine: ObservableObject {
     // MARK: - 状态机
 
     private func handle(price: Double) {
+        // 数据源刚切换：这笔只作为新基准价，不参与穿越判定（见 discardNextTick）
+        if discardNextTick {
+            discardNextTick = false
+            lastPrice = price
+            LogCollector.shared.append(
+                "alert: 数据源切换后的首笔快照仅作基准价（\(String(format: "%.1f", price))）"
+            )
+            return
+        }
+
         // 先捕获上一价用于判定方向，再更新
         let previous = lastPrice
         defer { lastPrice = price }
@@ -274,6 +301,7 @@ final class AlertEngine: ObservableObject {
         isTest = false
         cooldownEndsAt = nil
         lastPrice = nil
+        discardNextTick = false
         phase = .armed
         LogCollector.shared.append("alert: 触发参数变更，状态机重置为已武装")
     }

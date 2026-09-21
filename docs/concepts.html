@@ -70,7 +70,7 @@ li{margin:5px 0}
 <article>
 
 <h1>悬浮行情 App（BTC · iOS）概念文档</h1>
-<p class="meta">持续追加型文档 ｜ 最后更新 2026-09-17 ｜ 记录讨论中产生的概念、术语、决策与背景</p>
+<p class="meta">持续追加型文档 ｜ 最后更新 2026-09-21 ｜ 记录讨论中产生的概念、术语、决策与背景</p>
 
 <div class="card">
 本文档记录<b>概念与术语</b>（轻量、持续追加）。完整方案、架构、接口与实现细节见 <code>docs/设计文档.html</code>。
@@ -150,7 +150,7 @@ li{margin:5px 0}
 <tr><th style="width:96px">定义</th><td>交易所提供的、无需 API Key 的公开行情数据专属域名。本项目指 Binance 的 <code>*.binance.vision</code>（走 AWS CloudFront）。</td></tr>
 <tr><th>产生背景</th><td>主站域名（<code>api.binance.com</code> / <code>stream.binance.com</code>）在国内直连被阻断，但公共数据域<b>直连可达</b>。</td></tr>
 <tr><th>实测</th><td>WS 60 秒压测：61 tick、平均间隔 989ms、<b>最大间隔 1010ms</b>（零断流）；REST 10/10 成功、平均 121ms。</td></tr>
-<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>作为 L1 主源与 L2 兜底</td></tr>
+<tr><th>状态</th><td><span class="tag st-drop">已作废</span>（2026-09-18）该域只提供现货，futures 路径返回 404；品种口径改为永续后弃用（见设计文档 4.5）</td></tr>
 <tr><th>关联概念</th><td>分层容错、异构兜底、SNI 阻断</td></tr>
 </tbody>
 </table>
@@ -171,7 +171,7 @@ li{margin:5px 0}
 <tbody>
 <tr><th style="width:96px">定义</th><td>兜底源必须来自不同厂商、不同 CDN 与不同域名族，避免"同域同时失效"。</td></tr>
 <tr><th>产生背景</th><td>L1 与 L2 同属 <code>binance.vision</code>，该域被封时会一起失效。</td></tr>
-<tr><th>结论</th><td>L3 选用 CoinEx（实测直连 440ms 可用），与 Binance 无共同基础设施依赖。</td></tr>
+<tr><th>结论</th><td>L3 选用 CoinEx 永续 REST（实测直连 721ms 可用），与 Gate 无共同基础设施依赖。</td></tr>
 <tr><th>状态</th><td><span class="tag st-ok">已采纳</span></td></tr>
 <tr><th>关联概念</th><td>分层容错</td></tr>
 </tbody>
@@ -205,6 +205,51 @@ li{margin:5px 0}
 <tr><th>结论</th><td>无需内置代理设置，用户挂上代理工具后自动生效；但探测发现部分技术栈（如 .NET <code>ClientWebSocket</code>）<b>不自动读取系统代理</b>，做网络诊断时须显式指定代理，否则会误判为"直连可用/不可用"。</td></tr>
 <tr><th>状态</th><td><span class="tag st-ok">已确认</span>并已修正探测方法</td></tr>
 <tr><th>关联概念</th><td>SNI 阻断、DNS 污染</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-reachability">可达性探测 (Reachability Probe)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>不检测「是否开启了 VPN / 代理」，而是直接向目标端点发一次最轻量请求，以「此刻能否拿到合法响应」作为可用性判据。</td></tr>
+<tr><th>产生背景</th><td>用户要求「能用欧易（OKX）就用欧易，否则走 Gate」。OKX 仅代理环境可达（直连被 TLS 阻断 / DNS 污染），需要一个判断依据。</td></tr>
+<tr><th>为何不检测 VPN</th><td>① TUN 模式 VPN 不写系统代理键，<code>CFNetworkCopySystemProxySettings()</code> 读不到；② 第三方 VPN 连接状态跨 App 不可读（<code>NEVPNManager</code> 仅限本 App 自己的配置）；③ 枚举 <code>utun*</code> / <code>ppp*</code> 接口会被系统自身隧道（iCloud 私密代理、Wi-Fi Calling）误判；④ 语义上「状态 ≠ 能力」：挂了代理但分流规则把目标域名走直连，照样不通。</td></tr>
+<tr><th>判据</th><td>无错误 + HTTP 200 + 业务码正确，三者缺一不可 —— 被劫持时常见「HTTP 200 但响应体不是预期结构」。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span><code>Sources/Market/SourceProbe.swift</code>（2026-09-21 实施，待真机验证）</td></tr>
+<tr><th>关联概念</th><td>自适应源优先级、跨源基差、分层容错</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-adaptivepriority">自适应源优先级 (Adaptive Source Priority)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>启动时先启用「直连可用」的默认源链，同时后台探测更高优先级的源；探测通过则把它插到链首并切换过去，否则保持默认链。</td></tr>
+<tr><th>产生背景</th><td>OKX 直连不可达、代理可达，而「是否挂代理」无法靠系统状态可靠判断（见可达性探测）。</td></tr>
+<tr><th>取舍</th><td>先出帧再升级：探测不阻塞首帧（用户无感），代价是可能发生一次源切换（须处理基差跳变）。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已采纳</span>（2026-09-21）</td></tr>
+<tr><th>关联概念</th><td>可达性探测、跨源基差、分层容错</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-basis">跨源基差 (Cross-source Basis)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>同一品种在不同交易所的报价存在系统性差异（basis）。实测 BTC 永续：CoinEx 77879 / Gate 77935 / OKX 77947，离散度约 0.09%。</td></tr>
+<tr><th>影响</th><td>切换数据源时价格会瞬间跳变几十美元；而报警采用「穿越判定」（比较上一价与当前价），若把跳变当真实行情处理，会凭空触发误报（false alert）。</td></tr>
+<tr><th>应对</th><td>切源时通知报警引擎，<b>首笔快照仅作基准价</b>，不参与穿越判定。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已处理</span>（2026-09-21）</td></tr>
+<tr><th>关联概念</th><td>自适应源优先级、价格报警、迟滞判定</td></tr>
+</tbody>
+</table>
+
+<h3 id="c-wsping">连接保活 (WebSocket Keep-alive Ping)</h3>
+<table>
+<tbody>
+<tr><th style="width:96px">定义</th><td>WebSocket 长连接需客户端周期性发送心跳报文（如 OKX 的文本 <code>ping</code>，服务端回 <code>pong</code>），否则服务端会主动断开。</td></tr>
+<tr><th>产生背景</th><td>OKX 对空闲连接有超时要求；若照抄 Gate 源（无心跳）会出现「连上约半分钟后莫名降级」，属假故障，最易踩坑。</td></tr>
+<tr><th>本实现</th><td>每 20 秒发一次（官方要求约 30 秒内，留安全余量）；单次发送失败只记日志，真正断链由 receive 回调暴露并触发降级。</td></tr>
+<tr><th>状态</th><td><span class="tag st-ok">已实施</span>（2026-09-21，待真机验证）</td></tr>
+<tr><th>关联概念</th><td>分层容错、会话保活（指 AVAudioSession，另一回事）</td></tr>
 </tbody>
 </table>
 
@@ -426,6 +471,10 @@ li{margin:5px 0}
 <a href="#c-healthmonitor">健康检查器</a>
 <a href="#c-backoff">指数退避</a>
 <a href="#c-sysproxy">系统代理透传</a>
+<a href="#c-reachability">可达性探测</a>
+<a href="#c-adaptivepriority">自适应源优先级</a>
+<a href="#c-basis">跨源基差</a>
+<a href="#c-wsping">连接保活（WS 心跳）</a>
 <a href="#c-delivery">三、构建与分发</a>
 <a href="#c-sideload">侧载</a>
 <a href="#c-personalteam">免费个人团队</a>

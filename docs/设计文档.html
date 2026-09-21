@@ -447,6 +447,75 @@ struct TickerSnapshot {
 OKX SWAP 作为挂代理时的备选，与用户截图中的品种完全一致。
 </div>
 
+<h3 id="datasource-adaptive">4.6 源优先级自适应（Adaptive Source Priority，2026-09-21）</h3>
+
+<blockquote>
+<p><b>需求</b>：用户希望「能用欧易（OKX）就用欧易，不能用就走 Gate / CoinEx」。而 OKX <b>仅代理环境可达</b>（直连被 TLS 阻断、<code>www.okx.com</code> 遭 DNS 污染），因此需要一个判断依据。</p>
+</blockquote>
+
+<h4>为什么不用「检测是否开了 VPN」</h4>
+
+<table>
+<thead><tr><th>检测手段</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td><code>CFNetworkCopySystemProxySettings()</code></td><td>只覆盖 HTTP/HTTPS/SOCKS <b>代理设置</b>；TUN 模式 VPN（Shadowrocket / Surge / Clash 默认）不写这些键，读不到</td></tr>
+<tr><td><code>NEVPNManager</code> 连接状态</td><td>只能读<b>本 App 自己创建</b>的 VPN 配置，跨 App 无效；且需要 NetworkExtension 权限</td></tr>
+<tr><td>枚举网络接口找 <code>utun*</code> / <code>ppp*</code></td><td><b>会误判</b>：系统自身的 iCloud 私密代理、Wi-Fi Calling 同样创建 utun 接口（已有公开 issue 证实此类 false positive）</td></tr>
+<tr><td>语义层面</td><td><b>状态 ≠ 能力</b>：挂了代理但分流规则把目标域名走直连，照样不通；反之某些运营商 / 内网环境能直连却没有 VPN 标志</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>决策</b>：改为 <b>可达性探测（reachability probe）</b> —— 直接验证目标端点<b>此刻</b>是否可达。
+判断依据是事实而非推断，结论在任何网络形态（VPN / 分流规则 / 内网代理 / 运营商差异）下都成立。
+</div>
+
+<h4>探测实现（<code>Sources/Market/SourceProbe.swift</code>）</h4>
+
+<table>
+<thead><tr><th>项</th><th>取值</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>探针端点</td><td><code>GET https://www.okx.com/api/v5/public/time</code></td><td>无参数、响应体最小；不用行情接口是为了避开频控（rate limit）</td></tr>
+<tr><td>超时</td><td>3 秒</td><td>代理链路首次 TLS 握手偏慢（实测 OKX REST 经代理约 1.5s），但超过 3 秒才响应的话，作为实时行情源已无意义</td></tr>
+<tr><td>判定规则</td><td>无错误 + HTTP 200 + 业务码 <code>"0"</code></td><td>三者缺一不可：被劫持时常见「HTTP 200 但响应体不是预期结构」，只看状态码会误判</td></tr>
+<tr><td>触发时机</td><td>仅 <code>TickerStore.start()</code> 执行一次</td><td>成本极低（几 KB）；「当前网络能否通 OKX」在一次会话内基本稳定</td></tr>
+</tbody>
+</table>
+
+<h4>启动时序（探测不阻塞首帧）</h4>
+
+<pre><code>start()
+ ├─ 立即启用 Gate 链（Gate WS → Gate REST → CoinEx REST）
+ │     └─ 首帧行情秒级到达，用户无感
+ ├─ 后台探测 OKX（3s 超时）
+ │     ├─ 可达   → 把 OKX 插到链首并立即切换 → 优先使用 OKX 永续 WS
+ │     └─ 不可达 → 保持 Gate 链（日志记录判定依据与耗时）
+ └─ 心跳看门狗启动（5s 粒度，仅记日志）</code></pre>
+
+<h4>优先级链（failover chain）</h4>
+
+<table>
+<thead><tr><th>探测结果</th><th>链序（自左向右依次降级）</th></tr></thead>
+<tbody>
+<tr><td><b>可达</b>（通常已挂代理）</td><td><b>OKX 永续 WS</b> → Gate 永续 WS → Gate 永续 REST → CoinEx 永续 REST</td></tr>
+<tr><td>不可达（直连环境）</td><td>Gate 永续 WS → Gate 永续 REST → CoinEx 永续 REST（＝原链）</td></tr>
+</tbody>
+</table>
+
+<p>注意：<b>OKX 之后仍保留 Gate</b>，即「欧易挂了立刻回 Gate」，而不是直接掉到异构兜底源。</p>
+
+<h4>连带处理的三件事（否则会引入新 bug）</h4>
+
+<ol>
+<li><b>跨源基差跳变（basis jump）</b>：不同交易所有基差（实测 CoinEx 77879 / Gate 77935 / OKX 77947，约 0.09%），切换源瞬间价格会跳变。而报警用的是穿越判定（比较上一价与当前价），若把这笔跳变当作真实行情，会<b>凭空触发一次误报</b>。处理：<code>TickerStore.onSourceChanged</code> 回调通知 <code>AlertEngine</code>，切源后的<b>首笔快照仅作为基准价</b>，不参与穿越判定。</li>
+<li><b>OKX 保活（keep-alive ping）</b>：OKX 对空闲连接有超时要求，客户端需定时发 <code>ping</code>，否则会被服务端断开 —— 表现是「连上约半分钟后莫名降级」，属假故障，最易踩坑。处理：<code>OKXFuturesWebSocketSource</code> 内 20 秒定时 ping（留足余量）。</li>
+<li><b>过期探测结果</b>：探测是异步的，期间源链若被重建（重新 start / stop），迟到的结果会把已停用的源又启起来。处理：<code>probeGeneration</code> 代次校验，过期结果直接丢弃。</li>
+</ol>
+
+<blockquote>
+<p><b>已知边界（Known Limitation）</b>：探测<b>只在启动时执行一次</b>。会话中途开关 VPN 不会重排优先级，需重启 App 才生效；若需实时响应网络变化，可接入 <code>NWPathMonitor</code> 监听路径变化后重探（属后续可选增强，本轮未做）。</p>
+</blockquote>
+
 <h2 id="pip">5. PiP 渲染管线</h2>
 
 <pre><code>MarketStore（行情状态聚合）
@@ -687,6 +756,9 @@ jobs:
 <tr><td>R12</td><td>PiP 窗口尺寸不可控，浮窗过大遮挡视野</td><td class="ok">已解决</td><td>低</td><td>已用宽高比杠杆处理：3.2:1 → 1.6:1，窗口面积减半。若仍需调整，继续改比例即可（纯参数改动）</td></tr>
 <tr><td>R13</td><td>价格报警依赖 PiP 会话存活，浮窗被关掉即失效</td><td>高</td><td class="warn">中</td><td>平台硬边界，无法绕过（详见 13.4）。缓解：应用内明确提示"浮窗须保持开启"；后续可评估是否补充"服务端推送 + 付费账号"作为第二通道</td></tr>
 <tr><td>R14</td><td>报警音在用户"媒体音量"过低时形同虚设</td><td>中</td><td class="warn">中</td><td>无法强制音量；缓解：界面提示，并在触发时同时给出强视觉闪烁（视觉不依赖音量）</td></tr>
+<tr><td>R15</td><td>跨源基差导致切换瞬间触发误报</td><td class="ok">已解决</td><td>低</td><td>切源时经 <code>onSourceChanged</code> 通知报警引擎，首笔快照仅作基准价、不参与穿越判定（见 4.6）</td></tr>
+<tr><td>R16</td><td>OKX 长连接因缺少保活被服务端断开（表现为"连上约半分钟后莫名降级"）</td><td>低</td><td class="warn">中</td><td>源内 20 秒定时发 <code>ping</code>；真断链仍由 receive 失败暴露并自动降级到 Gate</td></tr>
+<tr><td>R17</td><td>可达性探测仅启动时执行一次，会话中途开关 VPN 不重排优先级</td><td>中</td><td>低</td><td>已知边界：重启 App 生效；后续可用 <code>NWPathMonitor</code> 监听路径变化后重探（可选增强）</td></tr>
 </tbody>
 </table>
 
@@ -955,6 +1027,8 @@ xcodebuild -exportArchive（method=ad-hoc）
 <a class="sub" href="#datasource-layers">4.2 分层容错设计</a>
 <a class="sub" href="#datasource-health">4.3 健康检查策略</a>
 <a class="sub" href="#datasource-abstract">4.4 抽象设计</a>
+<a class="sub" href="#datasource-perp">4.5 永续源实测与分层</a>
+<a class="sub" href="#datasource-adaptive">4.6 源优先级自适应</a>
 <a href="#pip">5. PiP 渲染管线</a>
 <a class="sub" href="#pip-keypoints">5.1 关键实现点</a>
 <a class="sub" href="#pip-color">5.2 配色规范</a>
