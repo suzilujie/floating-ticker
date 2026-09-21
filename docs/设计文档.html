@@ -781,6 +781,87 @@ COOLDOWN（冷却）     默认 1 分钟内不再触发（界面可改），从"
 <br><b>参数变更即重置状态机</b>：改目标价 / 容差 / 方向后立刻回到「已武装」，并清空冷却与上一价。既避免"改完参数还得等 5 分钟冷却"的困扰，也让"改成现价附近即触发"这种验证方式成立。
 </div>
 
+<h2 id="testflight">14. TestFlight 分发（付费账号路径）</h2>
+
+<p>加入 Apple Developer Program（¥688/年）后，分发方式从"USB 侧载"升级为"TestFlight 远程安装与更新"。这是本项目在<b>长期可用性</b>上的一次质变，也是"零成本"阶段的收尾。</p>
+
+<h3 id="tf-compare">14.1 两条分发路径对比</h3>
+<table>
+<thead><tr><th>维度</th><th>免费账号 + Sideloadly（保留作兜底）</th><th>付费账号 + TestFlight</th></tr></thead>
+<tbody>
+<tr><td>安装方式</td><td>必须 USB 连线，Windows 侧签名</td><td class="ok">TestFlight 链接分发，可远程装到任意一台自己设备</td></tr>
+<tr><td>有效期</td><td class="no">证书 7 天过期，需每周重签</td><td class="ok">构建 90 天有效，CI 自动上传即永不中断</td></tr>
+<tr><td>更新</td><td>重新侧载，两台各做一遍</td><td class="ok">手机收到更新提示，点一下即可</td></tr>
+<tr><td>推送权限（APNs）</td><td class="no">无</td><td class="ok">有 —— 当初被搁置的「灵动岛 / 锁屏刷新」重新可行（见 2.1 节）</td></tr>
+<tr><td>成本</td><td>¥0</td><td>¥688/年（自动续订）</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>为什么两条都保留</b>：TestFlight 依赖账号与网络环境，一旦出问题（构建处理失败、账号异常），侧载是唯一能立刻装机的后路。而侧载这条链路已经跑通并有产物自检，维护成本几乎为零。
+</div>
+
+<h3 id="tf-pipeline">14.2 上传流水线（<code>.github/workflows/testflight.yml</code>）</h3>
+<pre><code>push 到 main
+      ↓
+凭据检查（不依赖 checkout，放在最前）
+      ├─ 未配置密钥 → 输出 notice 并跳过全部后续步骤（CI 保持绿色）
+      └─ 已配置
+            ↓
+   xcodegen 生成工程 → 注入构建指纹 → 写入 API 密钥
+            ↓
+   xcodebuild archive（Release，自动签名）
+            ↓
+   xcodebuild -exportArchive（App Store ipa）
+            ↓
+   xcrun altool --upload-app → TestFlight</code></pre>
+
+<table>
+<thead><tr><th>设计点</th><th>做法</th><th>原因</th></tr></thead>
+<tbody>
+<tr><td><b>安全跳过</b></td><td>凭据检查的结论经 step output 传递给后续步骤的 <code>if</code></td><td>GitHub Actions 的 <code>if</code> 无法直接引用 secrets；这样可在密钥就绪前先合并本文件，且不把 CI 弄红</td></tr>
+<tr><td><b>签名</b></td><td>App Store Connect API 密钥 + <code>-allowProvisioningUpdates</code></td><td>证书与描述文件由 Xcode 自动创建/下载，<b>无需手工维护 .p12 与 profile</b>，是 CI 场景下最省心的方式</td></tr>
+<tr><td><b>构建号</b></td><td><code>CURRENT_PROJECT_VERSION</code> 取 <code>GITHUB_RUN_NUMBER</code></td><td>同一版本号重复上传会被 App Store Connect <b>直接拒收</b>，这是 CI 自动上传最经典的坑</td></tr>
+<tr><td><b>导出方式</b></td><td>按 Xcode 主版本自动选择 <code>app-store-connect</code> / <code>app-store</code></td><td>该取值在 Xcode 15 变更过，硬编码会在换 runner 镜像时失败</td></tr>
+<tr><td><b>plist 生成</b></td><td><code>plutil -create xml1</code> + <code>PlistBuddy</code></td><td>避免 heredoc 把 XML 声明缩进坏掉导致 plist 非法</td></tr>
+<tr><td><b>密钥落盘</b></td><td>以 base64 存 Secrets，用 <code>openssl base64 -d -A</code> 解码到 <code>~/.appstoreconnect/private_keys/</code></td><td>Secrets 不适合存多行文本；openssl 在 macOS/Linux 参数一致</td></tr>
+</tbody>
+</table>
+
+<h3 id="tf-secrets">14.3 需要的仓库 Secrets</h3>
+<table>
+<thead><tr><th>名称</th><th>内容</th><th>从哪取</th></tr></thead>
+<tbody>
+<tr><td><code>ASC_API_KEY_ID</code></td><td>API 密钥的 Key ID</td><td>App Store Connect → 用户和访问 → 集成 → App Store Connect API</td></tr>
+<tr><td><code>ASC_API_ISSUER_ID</code></td><td>Issuer ID</td><td>同上页面顶部</td></tr>
+<tr><td><code>ASC_API_KEY_P8</code></td><td><code>.p8</code> 文件内容的 base64</td><td>生成密钥时下载（<b>只能下载一次</b>）</td></tr>
+<tr><td><code>ASC_TEAM_ID</code></td><td>（可选）团队 ID</td><td>Membership details 页面</td></tr>
+</tbody>
+</table>
+<p>Windows 上生成 base64 的命令：</p>
+<pre><code>powershell -NoProfile -Command "[Convert]::ToBase64String([IO.File]::ReadAllBytes('AuthKey_XXXXXX.p8'))"</code></pre>
+
+<h3 id="tf-onboarding">14.4 首次配置步骤</h3>
+<ol>
+<li>登录 <code>appstoreconnect.apple.com</code> → <b>接受新版协议</b>（Agreements, Tax, and Banking）。<b>不做这一步，构建无法上传</b></li>
+<li>建 App 记录：我的 App → ＋ → 平台 iOS → Bundle ID 必须选 <code>com.xfish.floatingticker</code> → SKU 随意</li>
+<li>生成 API 密钥：用户和访问 → 集成 → App Store Connect API → 密钥 → ＋ → 角色选 <b>App Manager</b> → 下载 <code>.p8</code>，记下 Key ID 与 Issuer ID</li>
+<li>把上述值填入 GitHub 仓库 Secrets</li>
+</ol>
+
+<h3 id="tf-caveats">14.5 使用与注意事项</h3>
+<table>
+<thead><tr><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>装到手机</td><td>App Store 安装 <b>TestFlight</b> → 用<b>同一个 Apple ID</b> 登录 → 构建处理后即出现，点击安装</td></tr>
+<tr><td>第二台设备</td><td class="ok"><b>远程安装</b>：把 TestFlight 邀请链接发过去即可，无需数据线</td></tr>
+<tr><td>审核</td><td><b>内部测试员（账号本人）无需审核</b>；给别人的 Apple ID 用属"外部测试员"，需 Beta 版审核（1~2 天，可能被挑刺）</td></tr>
+<tr><td>构建处理时间</td><td>上传后通常 5~30 分钟才能在 TestFlight 中看到</td></tr>
+<tr><td>90 天到期</td><td>每个构建 90 天后失效。因 CI 每次 push 都会自动上传新构建，正常情况下无需操心</td></tr>
+<tr><td>Ad Hoc 备选</td><td>付费账号同时具备 Ad Hoc 分发能力：把设备 UDID 加入描述文件，通过 HTTPS 链接安装，<b>1 年有效且无需审核</b>；代价是要手工维护 UDID、且没有自动更新提示</td></tr>
+</tbody>
+</table>
+
 <h2 id="appendix">附录 A：探测脚本</h2>
 <p>项目 <code>scripts/</code> 目录下四个 PowerShell 探测脚本，用于后续数据源复检（行情源可达性会随时间变化）：</p>
 <table>

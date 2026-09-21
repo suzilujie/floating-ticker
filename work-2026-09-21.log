@@ -1,0 +1,66 @@
+================================================================================
+工作日志 work-2026-09-21.log
+项目：悬浮行情 App（BTC · iOS）｜ 代号 FloatingTicker
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-09-21] 阶段一：TestFlight 上传流水线（付费账号路径）
+--------------------------------------------------------------------------------
+
+■ 背景
+  用户购买 Apple Developer Program 个人会员（¥688/年）已成功付款，
+  账号处于开通流程中。付费账号解锁的分发方式是本项目下一步的关键变化：
+    - 免费账号：Sideloadly + USB 线，证书 7 天过期，需每周重签
+    - 付费账号：TestFlight 远程安装与更新（链接分发），构建 90 天有效
+  另需说明：付费账号同时解锁 APNs（推送）权限，即当初被搁置的
+  「灵动岛 / 锁屏刷新」方案（设计文档 2.1 节列为"第二版评估"）重新可行。
+
+■ 本轮变更
+  新增 .github/workflows/testflight.yml
+    - 触发：推送 main 或手动触发
+    - 流程：xcodegen 生成工程 → 注入构建指纹 → 写入 API 密钥 →
+            xcodebuild archive（Release，自动签名）→
+            xcodebuild -exportArchive（App Store ipa）→ altool 上传
+    - 签名方式：App Store Connect API 密钥 + -allowProvisioningUpdates，
+      证书与描述文件由 Xcode 自动创建/下载，**无需手工维护 .p12 与 profile**
+    - 构建号：CURRENT_PROJECT_VERSION 取 GitHub 运行号自动递增
+      （同一版本号重复上传会被 App Store Connect 直接拒收，这是经典坑）
+
+■ 关键设计：未配置密钥时安全跳过
+  凭据检查放在流水线最前面，且不依赖 checkout；
+  后续所有步骤以它的输出（configured）为条件。
+  效果：密钥未填时整条流水线显示为成功并输出一条 notice，
+  **不会把 CI 弄红**，因此本文件可在密钥就绪前先合并进仓库。
+
+■ 需要的仓库 Secrets（四个）
+  ASC_API_KEY_ID      API 密钥 Key ID
+  ASC_API_ISSUER_ID   Issuer ID
+  ASC_API_KEY_P8      .p8 内容的 base64（Secrets 不适合存多行文本）
+  ASC_TEAM_ID         （可选）团队 ID
+
+■ 上传前的配置核查（结论：无需改动 App 配置）
+  本担心两处会直接挡住 TestFlight 上传，核查 Support/Info.plist 后发现均已在位：
+    1) UILaunchScreen —— 缺失会导致上传校验报"缺少启动屏"（已有空字典占位）
+    2) ITSAppUsesNonExemptEncryption = false —— 免去每次上传被追问出口合规（已声明）
+  版本号亦已绑定构建设置（CFBundleShortVersionString=$(MARKETING_VERSION)、
+  CFBundleVersion=$(CURRENT_PROJECT_VERSION)），故构建号递增的方案可直接生效。
+
+■ 与既有流水线的关系
+  ios-build.yml 保留不动，继续产出「未签名 ipa」作为侧载兜底路径。
+  两条流水线都会在 push 时运行，公开仓库的 macOS 额度不受影响。
+
+■ 影响范围
+  仅新增 CI 工作流；App 代码、工程配置、渲染与报警逻辑均未改动。
+
+■ 待验证
+  1) 未配置密钥时：testflight.yml 应成功跳过并输出 notice（本轮即可验证）
+  2) 配置密钥后：能否一次跑通 archive → export → 上传
+  3) TestFlight 中构建处理完成后，能否在两台 iPhone 上远程安装
+
+■ 下一步（用户侧）
+  1) App Store Connect 接受新版协议（Agreements, Tax, and Banking）
+  2) 建 App 记录，Bundle ID 必须是 com.xfish.floatingticker
+  3) 生成 App Store Connect API 密钥（角色 App Manager），下载 .p8 并记下 Key ID 与 Issuer ID
+  4) 把三个（可选四个）值填进 GitHub Secrets
+
+================================================================================
