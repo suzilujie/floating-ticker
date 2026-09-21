@@ -12,7 +12,8 @@ import Foundation
 ///      反过来某些运营商 / 内网环境能直连，却没有任何 VPN 标志。
 ///
 /// 故这里**直接验证目标端点此刻是否可达** —— 依据是事实而非推断。
-/// 代价是启动时多一次请求（几 KB），收益是判定结果在任何网络形态下都成立。
+/// 结论：**是否需要代理由网络环境决定，App 只认「此刻通不通」**，
+/// 因此「不管有没有开 VPN，只要 OKX 可达就用 OKX」这条策略天然成立。
 enum SourceProbe {
 
     // MARK: - 探测结果
@@ -34,7 +35,7 @@ enum SourceProbe {
         let isWebSocket: Bool
     }
 
-    /// 全部待探测源。顺序即界面显示顺序，与 TickerStore 的源链对应。
+    /// 全部待探测源（供「数据源可达性」面板展示）。顺序即界面显示顺序。
     static let targets: [Target] = [
         Target(name: "Gate 永续 WS",
                url: URL(string: "wss://fx-ws.gateio.ws/v4/ws/usdt")!,
@@ -55,12 +56,9 @@ enum SourceProbe {
 
     /// 探测超时 3 秒。
     ///
-    /// 取值理由：代理链路的首次 TLS 握手可能偏慢（实测 OKX REST 经代理约 1.5s），
-    /// 但超过 3 秒才有响应的话，作为实时行情源也已没有意义。
+    /// 取值理由：代理链路的首次 TLS 握手可能偏慢（实测 OKX WS 经代理 924ms、
+    /// REST 约 1.5s），但超过 3 秒才有响应的话，作为实时行情源也已没有意义。
     private static let timeout: TimeInterval = 3.0
-
-    /// OKX 公共时间接口：无参数、响应体最小，是最轻量的可达性探针。
-    private static let okxProbeURL = URL(string: "https://www.okx.com/api/v5/public/time")!
 
     // MARK: - 全量探测（界面用）
 
@@ -183,62 +181,31 @@ enum SourceProbe {
         }
     }
 
-    // MARK: - OKX 单点探测（TickerStore 启动时用于决定是否把 OKX 提为首选源）
+    // MARK: - OKX 专用探测（TickerStore 决定源优先级用）
 
-    /// 探测 OKX 是否可达。回调保证在主线程。
+    /// OKX 永续 WS 端点，与 `OKXFuturesWebSocketSource` 使用的**完全一致**。
+    private static let okxWSURL = URL(string: "wss://ws.okx.com:8443/ws/v5/public")!
+
+    /// 探测 OKX 是否可用。回调保证在主线程。
+    ///
+    /// **探测的是实际使用的 WS 端点，而不是 REST 端点** ——
+    /// 「可达」应当意味着「这个源真的能用」。若探测 `www.okx.com`（REST），
+    /// 当代理分流规则只放行 REST、不放行 WS 时就会误判为可用，
+    /// 进而出现「切到 OKX WS → 连不上降级 → 探测又说可达 → 又切回」的反复横跳。
     ///
     /// - Parameter log: 是否写入日志。启动探测需要（作为决策依据），
     ///   而每 60 秒一次的定期重评不需要 —— 否则会把环形日志刷满，
     ///   冲掉更要紧的自愈记录（重建 / 降级 / 回绕）。
     static func probeOKX(log: Bool = true, completion: @escaping (Bool) -> Void) {
-        var request = URLRequest(url: okxProbeURL)
-        request.timeoutInterval = timeout
-        // 必须反映"此刻"的网络状况，不能被任何缓存结果掩盖
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-
-        let startedAt = Date()
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
-            let verdict = evaluate(data: data, response: response, error: error)
+        let target = Target(name: "OKX 永续 WS", url: okxWSURL, isWebSocket: true)
+        probeWebSocket(target) { result in
             if log {
                 LogCollector.shared.append(
-                    "probe: OKX \(verdict.isReachable ? "可达" : "不可达")"
-                        + "（\(elapsed)ms，\(verdict.reason)）"
+                    "probe: OKX \(result.isReachable ? "可达" : "不可达")"
+                        + "（\(result.latencyMs)ms，\(result.detail)）"
                 )
             }
-            DispatchQueue.main.async { completion(verdict.isReachable) }
-        }.resume()
-    }
-
-    /// 判定结论
-    struct Verdict {
-        let isReachable: Bool
-        /// 判定依据（写入日志，便于真机诊断）
-        let reason: String
-    }
-
-    /// 判定规则：无错误 + HTTP 200 + 业务码 `"0"`，三者缺一不可。
-    ///
-    /// 为什么必须校验业务码：被中间设备劫持或出口网关拦截时，常见
-    /// 「HTTP 200 但响应体不是预期结构」，只看状态码会误判为可达。
-    private static func evaluate(data: Data?, response: URLResponse?, error: Error?) -> Verdict {
-        if let error = error {
-            return Verdict(isReachable: false, reason: "请求失败：\(error.localizedDescription)")
+            DispatchQueue.main.async { completion(result.isReachable) }
         }
-        guard let http = response as? HTTPURLResponse else {
-            return Verdict(isReachable: false, reason: "无 HTTP 响应")
-        }
-        guard http.statusCode == 200 else {
-            return Verdict(isReachable: false, reason: "HTTP \(http.statusCode)")
-        }
-        guard let data = data,
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let code = root["code"] as? String else {
-            return Verdict(isReachable: false, reason: "响应体无法解析（疑似被劫持）")
-        }
-        guard code == "0" else {
-            return Verdict(isReachable: false, reason: "业务码 \(code)")
-        }
-        return Verdict(isReachable: true, reason: "HTTP 200，业务码 0")
     }
 }

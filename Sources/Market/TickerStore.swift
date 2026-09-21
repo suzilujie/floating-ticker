@@ -86,9 +86,10 @@ final class TickerStore: ObservableObject {
     /// OKX 最近一次连接失败的时刻。
     ///
     /// 用于「只要 OKX 可达就用 OKX」这条策略的**防横跳冷却**：
-    /// 可达性探测走 REST（`www.okx.com`），实际使用的是 WS（`ws.okx.com:8443`），
-    /// 代理分流规则可能只放行其中一个 —— 若不加冷却，就会出现
-    /// 「切到 OKX → WS 连不上降级到 Gate → 探测又说可达 → 又切回 OKX」的反复横跳。
+    /// 探测已改为直接验证 WS 端点（可达即真的能连上），但长连接仍可能因
+    /// 网络抖动、服务端限流而在建立后不久掉线；若无冷却，就会出现
+    /// 「切到 OKX → 掉线降级到 Gate → 探测又说可达 → 立刻切回」的反复抖动，
+    /// 表现为价格在两个交易所之间高频跳变。
     private var okxLastFailureAt: Date?
     private static let okxSwitchCooldown: TimeInterval = 120
 
