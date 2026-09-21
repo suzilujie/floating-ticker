@@ -22,12 +22,6 @@ struct AlertSettingsView: View {
                     .frame(maxWidth: 130)
             }
 
-            Picker("触发条件", selection: $alert.config.onlyDown) {
-                Text("跌破目标价").tag(true)
-                Text("涨破目标价").tag(false)
-            }
-            .pickerStyle(.segmented)
-
             HStack {
                 Text("状态")
                 Spacer()
@@ -57,18 +51,15 @@ struct AlertSettingsView: View {
         }
     }
 
-    /// 规则说明。用具体数字与方向拼出来，避免用户读了还不知道"什么情况下才报"。
+    /// 规则说明。用具体数字拼出来，避免用户读了还不知道"什么情况下才报"。
     private var ruleText: String {
         let target = alert.config.targetText
-        let verb = alert.config.onlyDown ? "跌破" : "涨破"
-        let side = alert.config.onlyDown ? "以下" : "以上"
-        let back = alert.config.safeSideText
         return """
-        规则：价格「穿过」\(target)（即\(verb) \(target)）的那一刻开始报警，并持续响；价格回到 \(target) \(back)则自动停止。
+        规则：价格「穿过」\(target)（向上或向下都算）时触发一次报警，并持续响；**不会自动停止**，需要按「停止」。
 
-        报警期间可随时手动停止；手动停止后，需价格先回到 \(target) \(back)、再次\(verb) \(target) 才会重新报警。
+        每穿越一次触发一次；价格在 \(target) 同一侧持续波动不会重复触发。
 
-        注意：只在"穿过那一刻"报警 —— 打开 App 时若价格已经在 \(target) \(side)，不会立刻报警。
+        注意：只在"穿过那一刻"报警 —— 打开 App 时若价格已经在 \(target) 的某一侧，不会立刻报警。
 
         三个停止入口：① 本页/首页顶部的红色按钮 ② 浮窗上的暂停键 ③ 直接关掉浮窗（会连带停止）。
 
