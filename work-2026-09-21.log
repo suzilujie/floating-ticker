@@ -63,4 +63,33 @@
   3) 生成 App Store Connect API 密钥（角色 App Manager），下载 .p8 并记下 Key ID 与 Issuer ID
   4) 把三个（可选四个）值填进 GitHub Secrets
 
+--------------------------------------------------------------------------------
+[2026-09-21] 阶段二：方向修正 —— 确定使用 Ad Hoc 分发（放弃 TestFlight）
+--------------------------------------------------------------------------------
+
+■ 变更原因
+  用户明确其账号走 Ad Hoc 分发，要求不再采用 TestFlight 方案。
+  注：Ad Hoc 是付费账号自带能力（非单独申请项），用户此前看到的
+  "Ad Hoc" 条目即账号已激活的证明。
+
+■ 调整
+  - 删除 .github/workflows/testflight.yml（未推送，本地移除）
+  - 新增 .github/workflows/ad-hoc.yml：
+      · 导出方式改为 method=ad-hoc
+      · 生成 manifest.plist 并把 ipa + manifest 发布到 GitHub Pages（gh-pages 分支）
+      · 产出稳定安装链接（itms-services://...）
+      · 同时上传 ipa 为 workflow artifact（可 USB 安装兜底）
+      · 沿用"未配置密钥时安全跳过"设计
+
+■ Ad Hoc 与 TestFlight 的关键取舍（决定此选择的依据）
+  - Ad Hoc 单构建寿命 1 年、无需审核，但无自动更新、需设备 UDID 注册
+  - 用户主力机（iPhone 17 Pro Max）不在身边：Ad Hoc 需先远程获取其 UDID
+    （Safari 配置描述文件方式，如 get.udid.io）
+
+■ 待办
+  - 用户侧：注册设备 UDID（测试机已有，主力机需远程获取）→ 注册 App ID
+            → 生成 API 密钥 → 填 Secrets → 启用 GitHub Pages
+  - 我侧：验证 ad-hoc.yml 跑通后，再据实修订设计文档第 14 章为 Ad Hoc 版本
+    （当前第 14 章仍描述 TestFlight，属于待更新的过时内容）
+
 ================================================================================

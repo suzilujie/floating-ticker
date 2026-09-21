@@ -1,37 +1,42 @@
-name: testflight
+name: ad-hoc
 
-# TestFlight 上传流水线（付费开发者账号路径）
+# Ad Hoc 分发流水线（付费开发者账号路径）
 #
-# 与 ios-build.yml 的分工：
-#   ios-build.yml   → 产出「未签名 ipa」，供 Windows 侧 Sideloadly 侧载（免费账号兜底，保留）
-#   testflight.yml  → 签名 + 上传 TestFlight，手机端远程安装与更新（不再需要数据线）
+# 产出：一个用 Ad Hoc 证书签名的 ipa + 供手机"点链接安装"的 manifest.plist，
+#       并发布到 GitHub Pages，得到一条 HTTPS 安装链接。
+#       手机 Safari 打开 itms-services:// 链接即可安装，无需数据线。
 #
-# 关键设计：**未配置密钥时整条流水线安全跳过**（既不报错也不把 CI 弄红）。
-# 因此在账号与密钥就绪之前，本文件可以先合并进仓库，不影响任何现有流程；
-# 密钥一旦填入 GitHub Secrets，下一次 push 就会自动打包上传。
+# 关键设计：**未配置密钥时整条流水线安全跳过**（不报错、不弄红 CI）。
 #
 # 需要的仓库 Secrets：
 #   ASC_API_KEY_ID      App Store Connect API 密钥的 Key ID
 #   ASC_API_ISSUER_ID   App Store Connect API 的 Issuer ID
 #   ASC_API_KEY_P8      .p8 文件内容的 base64（Secrets 不适合直接存多行文本）
-#   ASC_TEAM_ID         （可选）团队 ID，导出时用于明确签名团队
+#   ASC_TEAM_ID         （可选）团队 ID
 #
-# 参见 docs/设计文档.html 第 14 章。
+# 前置条件（用户侧，需先在 Apple 开发者后台完成）：
+#   1. 把要安装的设备 UDID 注册进 Devices（Ad Hoc 的"白名单"）
+#   2. 注册 App ID：com.xfish.floatingticker
+#   3. 仓库 Settings → Pages 里启用 Pages（Source 选 gh-pages 分支根目录）
+#
+# 安装链接（构建成功后，在 Summary 里会打印）：
+#   itms-services://?action=download-manifest&url=https://<owner>.github.io/<repo>/manifest.plist
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  upload:
-    name: Build, sign and upload to TestFlight
+  distribute:
+    name: Build and distribute Ad Hoc
     runs-on: macos-15
     timeout-minutes: 45
 
     steps:
-      # 凭据检查放在最前面，且不依赖 checkout：
-      # 后续所有步骤都以它的输出为条件，实现"没密钥就整体跳过"
       - name: Check credentials
         id: creds
         env:
@@ -41,10 +46,10 @@ jobs:
         run: |
           if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=跳过 TestFlight 上传::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8；本次跳过上传，其余流程不受影响"
+            echo "::notice title=跳过 Ad Hoc 分发::未配置 ASC_API_KEY_ID / ASC_API_ISSUER_ID / ASC_API_KEY_P8；本次跳过，其余流程不受影响"
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "密钥已配置，将执行签名并上传 TestFlight"
+            echo "密钥已配置，将执行 Ad Hoc 签名并发布"
           fi
 
       - name: Checkout
@@ -65,7 +70,6 @@ jobs:
         if: steps.creds.outputs.configured == 'true'
         run: xcodegen generate
 
-      # 与 ios-build.yml 一致：把提交号写进 App，界面可查"装的是哪一版"
       - name: Inject build info
         if: steps.creds.outputs.configured == 'true'
         run: |
@@ -90,8 +94,6 @@ jobs:
           set -e
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
-          # 用 openssl 而不是 base64 命令解码：macOS(BSD) 与 Linux(GNU) 的
-          # base64 参数不同，openssl 两边一致；-A 要求单行，故先去掉换行与空格
           printf '%s' "$KEY_P8" | tr -d '\n\r ' | openssl base64 -d -A > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
           echo "已写入密钥：$KEY_PATH"
@@ -104,7 +106,6 @@ jobs:
           ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
           set -e
-          # 构建号用 GitHub 运行号自动递增：同一版本号重复上传会被 App Store Connect 直接拒收
           xcodebuild archive \
             -project FloatingTicker.xcodeproj \
             -scheme FloatingTicker \
@@ -118,7 +119,7 @@ jobs:
             CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             MARKETING_VERSION="0.1"
 
-      - name: Export App Store ipa
+      - name: Export Ad Hoc ipa
         if: steps.creds.outputs.configured == 'true'
         env:
           KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
@@ -126,21 +127,9 @@ jobs:
           TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
         run: |
           set -e
-          # exportOptions 的 method 取值随 Xcode 版本变化：
-          # Xcode 15+ 为 app-store-connect，更早的版本为 app-store
-          XCODE_MAJOR=$(xcodebuild -version | head -n 1 | awk '{print $2}' | cut -d. -f1)
-          if [ "$XCODE_MAJOR" -ge 15 ]; then
-            METHOD=app-store-connect
-          else
-            METHOD=app-store
-          fi
-          echo "Xcode major=$XCODE_MAJOR，导出方式=$METHOD"
-
-          # 用 plutil + PlistBuddy 生成 plist，避免 heredoc 写法把 XML 声明缩进坏掉
           plutil -create xml1 ExportOptions.plist
-          /usr/libexec/PlistBuddy -c "Add :method string $METHOD" ExportOptions.plist
+          /usr/libexec/PlistBuddy -c "Add :method string ad-hoc" ExportOptions.plist
           /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" ExportOptions.plist
-          /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" ExportOptions.plist
           if [ -n "$TEAM_ID" ]; then
             /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" ExportOptions.plist
           fi
@@ -159,35 +148,86 @@ jobs:
           echo "=== 导出产物 ==="
           ls -lh build/export
 
-      - name: Upload to TestFlight
+      - name: Prepare OTA files
         if: steps.creds.outputs.configured == 'true'
-        env:
-          KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
           set -e
-          # altool 已被 Apple 标记为 deprecated，但仍是 CI 上传构建的常规手段。
-          # 若某天 runner 上不再提供，改走 fastlane 的 upload_to_testflight（需要我调整本文件）。
-          if ! xcrun --find altool > /dev/null 2>&1; then
-            echo "::error::runner 上找不到 altool，需改用 fastlane 上传（请告知我调整 workflow）"
-            exit 1
-          fi
-          xcrun altool --upload-app \
-            --type ios \
-            --file build/export/FloatingTicker.ipa \
-            --apiKey "$KEY_ID" \
-            --apiIssuer "$ISSUER_ID" \
-            --verbose
+          mkdir -p ota
+          # 固定文件名，确保 manifest 里的下载地址稳定
+          cp build/export/FloatingTicker.ipa ota/FloatingTicker.ipa
+          ls -lh ota/FloatingTicker.ipa
+
+          REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO##*/}"
+          BASE="https://${OWNER}.github.io/${NAME}/"
+
+          cat > ota/manifest.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key><string>software-package</string>
+                    <key>url</key><string>${BASE}FloatingTicker.ipa</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key><string>com.xfish.floatingticker</string>
+                  <key>bundle-version</key><string>0.1</string>
+                  <key>kind</key><string>software</string>
+                  <key>title</key><string>悬浮行情</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          echo "BASE=$BASE"
+          echo "manifest 内容："
+          cat ota/manifest.plist
+
+      - name: Publish to GitHub Pages
+        if: steps.creds.outputs.configured == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./ota
+          publish_branch: gh-pages
+          force_orphan: true
+
+      - name: Upload ipa artifact
+        if: steps.creds.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatingTicker-adhoc-ipa
+          path: ota/FloatingTicker.ipa
+          retention-days: 30
 
       - name: Summary
         if: steps.creds.outputs.configured == 'true'
         run: |
+          REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO##*/}"
+          BASE="https://${OWNER}.github.io/${NAME}/"
           {
-            echo "### TestFlight 上传完成"
+            echo "### Ad Hoc 分发完成"
             echo ""
             echo "- 提交：$(git rev-parse --short HEAD)"
             echo "- 版本：0.1（构建号 ${GITHUB_RUN_NUMBER}）"
             echo ""
-            echo "构建在 App Store Connect 处理完成后（通常 5~30 分钟）会出现在 TestFlight 中。"
-            echo "内部测试员（账号本人）无需审核，可直接安装。"
+            echo "**手机 Safari 打开下面的链接安装**（须先把设备 UDID 注册进 Devices）："
+            echo ""
+            echo "itms-services://?action=download-manifest&url=${BASE}manifest.plist"
+            echo ""
+            echo "> 注意：GitHub Pages 首次启用后需等约 1 分钟才可访问；"
+            echo "> 安装后第一次打开若被拦，去 设置 → 通用 → VPN 与设备管理 信任证书。"
           } >> "$GITHUB_STEP_SUMMARY"
