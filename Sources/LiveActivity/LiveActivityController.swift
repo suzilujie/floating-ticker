@@ -44,9 +44,20 @@ final class LiveActivityController {
     /// 活动非 active 时只记一次日志，避免每秒刷屏
     private var didLogInactive = false
 
-    /// 更新节流：实测/官方建议实时活动更新不超过 ~1 次/秒。
+    /// 前台更新间隔：实测/官方建议实时活动更新不超过 ~1 次/秒。
     /// 我们的行情约每秒一条，节流后正好每笔都更新；抖动时也不会连发。
-    private static let minUpdateInterval: TimeInterval = 1.0
+    private static let foregroundUpdateInterval: TimeInterval = 1.0
+
+    /// 后台 / 锁屏更新间隔（放宽到 15 秒）。
+    ///
+    /// **为什么必须放宽**：App 在后台时，ActivityKit 会对本地更新做节流，
+    /// 按秒推送时系统往往在几秒后开始**丢弃**更新 —— 外部表现正是
+    /// 「锁屏一会儿灵动岛就不动了」。Apple 给出的标准建议也是
+    /// 「App 在后台时降低 Live Activity 的更新频率」。
+    ///
+    /// 放宽到 15 秒后，锁屏态从「冻住」变成「每 15 秒跳一次」：
+    /// 精度下降，但**保持存活**。回到前台立即恢复 1 秒级。
+    private static let backgroundUpdateInterval: TimeInterval = 15.0
 
     /// 重建周期：系统约 8 小时结束活动，这里提前到 7.5 小时重建，留安全余量。
     private static let recreateAfter: TimeInterval = 7.5 * 3600
@@ -259,10 +270,11 @@ final class LiveActivityController {
     private func update(price: Double, changePercent: Double) {
         guard let activity = activity else { return }
 
-        // 活动不在 active 说明它已被系统结束/被用户划掉。此时 update() 是空操作，
-        // 继续调用只是白费序列化 —— 记一次日志，剩下交给状态监听触发重建。
+        // 只有 ended / dismissed 才算「终止」。注意 .stale 只是系统的「内容过期标记」，
+        // 活动仍然可以继续更新 —— 若把它也当作终止，我们就会**自己把推送停掉**，
+        // 表现就是界面在该状态下永久冻住（日志里只留一行"暂停更新"）。
         let activityState = activity.activityState
-        guard activityState == .active else {
+        guard activityState == .active || activityState == .stale else {
             if !didLogInactive {
                 didLogInactive = true
                 LogCollector.shared.append(
@@ -273,8 +285,10 @@ final class LiveActivityController {
         }
         didLogInactive = false
 
-        // 节流：低于最小间隔的直接丢弃（系统本来也会节流，不如自己省一次序列化）
-        if let last = lastUpdateAt, Date().timeIntervalSince(last) < Self.minUpdateInterval {
+        // 节流：前台跟随行情（约 1 秒/次），后台/锁屏放宽到 15 秒以避开系统节流
+        let isBackground = UIApplication.shared.applicationState != .active
+        let interval = isBackground ? Self.backgroundUpdateInterval : Self.foregroundUpdateInterval
+        if let last = lastUpdateAt, Date().timeIntervalSince(last) < interval {
             return
         }
         lastUpdateAt = Date()
@@ -282,7 +296,7 @@ final class LiveActivityController {
         // 取证：累计后台/锁屏期间的更新次数，由健康心跳每 10 秒汇总成一行输出。
         // 刻意不在这里单独打点 —— 心跳已经带出了这个计数，少一行噪音就能让
         // 300 行环形缓冲多装些关键日志。
-        if UIApplication.shared.applicationState != .active {
+        if isBackground {
             backgroundUpdateCount += 1
         }
 
