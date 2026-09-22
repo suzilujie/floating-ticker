@@ -20,6 +20,7 @@ struct ContentView: View {
     @ObservedObject private var market = TickerStore.shared
     @ObservedObject private var pip = PiPController.shared
     @ObservedObject private var alert = AlertEngine.shared
+    @ObservedObject private var pipStyle = PiPStyle.shared
 
     /// 应用场景阶段：回到前台（含锁屏解锁）时用来触发一次数据新鲜度检查
     @Environment(\.scenePhase) private var scenePhase
@@ -110,6 +111,20 @@ struct ContentView: View {
                         InfoRow(title: "构建提交", value: BuildInfo.commit)
                         InfoRow(title: "证书到期", value: expiryText)
                         InfoRow(title: "剩余时长", value: remainingText)
+
+                        // 浮窗背景：实验性可调项（见 PiPStyle）。
+                        // 画面逐帧重绘，切换后**立刻**在浮窗上生效，不用重开浮窗。
+                        Picker("浮窗背景", selection: $pipStyle.background) {
+                            Text("深色铺满").tag(PiPStyle.Background.dark)
+                            Text("透明留白（实验）").tag(PiPStyle.Background.transparent)
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(pipStyle.background == .dark
+                             ? "整窗一块深色底（默认）"
+                             : "仅内容区留底色、四周透明 —— 用于验证 PiP 是否支持透明透视")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
 
                         Button("刷新日志") { refreshLog() }
                         Text(logText.isEmpty ? "暂无日志" : logText)

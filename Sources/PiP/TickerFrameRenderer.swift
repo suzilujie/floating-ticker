@@ -107,9 +107,29 @@ enum TickerFrameRenderer {
         context.translateBy(x: 0, y: frameSize.height)
         context.scaleBy(x: 1, y: -1)
 
-        // 深色背景（铺满整张画布）
-        context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
-        context.fill(CGRect(origin: .zero, size: frameSize))
+        // 必须先把整幅画布清为**全透明**：
+        // 每帧的像素缓冲都是新分配的（CVPixelBufferCreate 不保证清零），
+        // 若不清，透明模式下会把上一帧/未初始化的残留像素显示出来。
+        context.clear(CGRect(origin: .zero, size: frameSize))
+
+        // 背景形态（可切换，见 PiPStyle）：
+        // - 深色铺满：默认，整窗一块深底
+        // - 透明留白：只给内容区铺一块圆角底，四周留透明。
+        //   若系统支持 alpha 透视，浮窗看起来就只剩这一小块；不支持则四周显黑。
+        switch PiPStyle.shared.background {
+        case .dark:
+            context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
+            context.fill(CGRect(origin: .zero, size: frameSize))
+
+        case .transparent:
+            // 圆角底紧贴内容（价格在 y≈81，第二行在 y≈251~291），四周留出可辨的余量
+            let pill = CGRect(x: 20, y: 50, width: frameSize.width - 40, height: 264)
+            context.setFillColor(UIColor(white: 0.07, alpha: 0.94).cgColor)
+            context.addPath(
+                CGPath(roundedRect: pill, cornerWidth: 44, cornerHeight: 44, transform: nil)
+            )
+            context.fillPath()
+        }
 
         // 报警视觉叠在底色之上、内容之下，使用整张画布的坐标
         let alert = AlertEngine.shared
