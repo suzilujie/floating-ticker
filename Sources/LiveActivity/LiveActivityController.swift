@@ -48,16 +48,16 @@ final class LiveActivityController {
     /// 我们的行情约每秒一条，节流后正好每笔都更新；抖动时也不会连发。
     private static let foregroundUpdateInterval: TimeInterval = 1.0
 
-    /// 后台 / 锁屏更新间隔（放宽到 15 秒）。
+    /// 后台 / 锁屏更新间隔。
     ///
-    /// **为什么必须放宽**：App 在后台时，ActivityKit 会对本地更新做节流，
-    /// 按秒推送时系统往往在几秒后开始**丢弃**更新 —— 外部表现正是
-    /// 「锁屏一会儿灵动岛就不动了」。Apple 给出的标准建议也是
-    /// 「App 在后台时降低 Live Activity 的更新频率」。
+    /// **本档已回退为 1 秒（与前台一致）**：曾按 Apple「后台降低更新频率」的通用建议
+    /// 放宽到 15 秒，但**真机对比显示没有任何改善，反而让锁屏刷新更迟钝**
+    /// （可从日志里「后台更新 N 次」的增速、以及锁屏卡片的秒级时间戳观察到）。
     ///
-    /// 放宽到 15 秒后，锁屏态从「冻住」变成「每 15 秒跳一次」：
-    /// 精度下降，但**保持存活**。回到前台立即恢复 1 秒级。
-    private static let backgroundUpdateInterval: TimeInterval = 15.0
+    /// 这条对比有价值：它说明本场景下「系统是否采用更新」**与频率无关** ——
+    /// 我们的本地 update() 一直在调（日志可证），但系统在锁屏态不采用。
+    /// 因此锁屏显示改走另一条被官方支持的后台通道（见 NowPlayingTicker）。
+    private static let backgroundUpdateInterval: TimeInterval = 1.0
 
     /// 重建周期：系统约 8 小时结束活动，这里提前到 7.5 小时重建，留安全余量。
     private static let recreateAfter: TimeInterval = 7.5 * 3600
