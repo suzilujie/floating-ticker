@@ -127,11 +127,20 @@ final class RacingFuturesRestSource: MarketDataSource {
     /// 解析失败只完整打一次（含响应片段），避免每 2 秒刷屏
     private var didLogParseFailure = false
 
+    /// 轮次代次：`start` / `stop` / 每轮轮询都会自增。
+    ///
+    /// 每条请求都带着"发出时的代次"，回调时代次对不上就**整条丢弃**。
+    /// 为什么必须有：`attemptRecovery` 里的 `stop()` 与 `start()` 是**同步**接上的，
+    /// 而上一轮的在途回调要到稍后才到达 —— 若不加代次，它们会去扣**本轮**的
+    /// `pending` 计数，让计数与实际在途请求错位（表现就是轮询节奏乱掉、甚至停摆）。
+    private var generation = 0
+
     // MARK: - 生命周期
 
     func start() {
         isStopped = false
         currentVenue = nil
+        generation += 1        // 作废上一轮遗留的所有在途回调
         resetRound()
 
         onState?(.connecting)
@@ -150,6 +159,7 @@ final class RacingFuturesRestSource: MarketDataSource {
 
     func stop() {
         isStopped = true
+        generation += 1        // 作废在途回调
         timer?.invalidate()
         timer = nil
         resetRound()
@@ -171,16 +181,18 @@ final class RacingFuturesRestSource: MarketDataSource {
 
     private func poll() {
         guard !isStopped, pending == 0 else { return }
+        generation += 1
+        let gen = generation
         failedThisRound.removeAll()
         standby = nil
         primarySucceeded = false
         fallbackSent = false
         primariesPending = Self.primaries.count
         pending = Self.primaries.count
-        for venue in Self.primaries { fetch(venue) }
+        for venue in Self.primaries { fetch(venue, generation: gen) }
     }
 
-    private func fetch(_ venue: Venue) {
+    private func fetch(_ venue: Venue, generation gen: Int) {
         var request = URLRequest(url: venue.url)
         // 价格必须反映"此刻"，不能被任何缓存掩盖
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -207,12 +219,14 @@ final class RacingFuturesRestSource: MarketDataSource {
                 }
             }
 
-            DispatchQueue.main.async { self.handle(outcome, from: venue) }
+            DispatchQueue.main.async { self.handle(outcome, from: venue, generation: gen) }
         }.resume()
     }
 
-    private func handle(_ outcome: Outcome, from venue: Venue) {
-        guard !isStopped else { return }
+    private func handle(_ outcome: Outcome, from venue: Venue, generation gen: Int) {
+        // 代次不符 = 这是上一轮（或重启前）的迟到回调 → 整条丢弃，
+        // 否则它会扣错本轮的计数（见 `generation` 注释）
+        guard !isStopped, gen == generation else { return }
         pending = max(pending - 1, 0)
         if venue.rank == 0 { primariesPending = max(primariesPending - 1, 0) }
 
@@ -241,14 +255,18 @@ final class RacingFuturesRestSource: MarketDataSource {
             }
         }
 
-        // 主源阶段收尾：主源一个都没成功 → 启动兜底源（Gate）
-        if primariesPending == 0, !primarySucceeded, !fallbackSent {
+        // 主源阶段收尾：主源一个都没成功 → 启动兜底源（Gate）。
+        //
+        // 这里必须再校验一次代次：上面的 `onState?(.failed)` 会让上层**立刻重启本源**
+        // （看门狗自愈），而重启是同步的 —— 不校验的话，这段会在新的一轮里
+        // 再补发一个多余的 Gate 请求，把 `pending` 计数打乱。
+        if gen == generation, primariesPending == 0, !primarySucceeded, !fallbackSent {
             fallbackSent = true
             pending += 1
             LogCollector.shared.append(
                 "market: 主源本轮全部失败 → 改用兜底源 \(Self.fallback.display) REST"
             )
-            fetch(Self.fallback)
+            fetch(Self.fallback, generation: gen)
         }
     }
 
