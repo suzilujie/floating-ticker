@@ -43,7 +43,7 @@ enum TickerFrameRenderer {
     /// 渲染一帧。
     static func render(now: Date) -> CVPixelBuffer? {
         guard let pixelBuffer = makePixelBuffer(size: frameSize) else {
-            LogCollector.shared.append("render: pixelBuffer 创建失败")
+            LogCollector.shared.append("pip: render pixelBuffer 创建失败")
             return nil
         }
 
@@ -60,7 +60,7 @@ enum TickerFrameRenderer {
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                 | CGBitmapInfo.byteOrder32Little.rawValue
         ) else {
-            LogCollector.shared.append("render: CGContext 创建失败")
+            LogCollector.shared.append("pip: render CGContext 创建失败")
             return nil
         }
 
@@ -71,7 +71,7 @@ enum TickerFrameRenderer {
         if !Self.didLogFirstPixel, let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
             let bytes = base.assumingMemoryBound(to: UInt8.self)
             LogCollector.shared.append(
-                "render: first pixel BGRA=(\(bytes[0]),\(bytes[1]),\(bytes[2]),\(bytes[3]))"
+                "pip: render first pixel BGRA=(\(bytes[0]),\(bytes[1]),\(bytes[2]),\(bytes[3]))"
             )
             Self.didLogFirstPixel = true
         }

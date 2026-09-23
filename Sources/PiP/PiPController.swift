@@ -71,13 +71,13 @@ final class PiPController: NSObject, ObservableObject {
 
     func start() {
         guard !isActive else { return }
-        LogCollector.shared.append("start: begin")
+        LogCollector.shared.append("pip: start begin")
 
         // 音频会话：PiP 在后台存活并持续刷新的关键前提
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .moviePlayback, options: [])
         try? session.setActive(true)
-        LogCollector.shared.append("start: audio session .playback")
+        LogCollector.shared.append("pip: start audio session .playback")
 
         // 后台保活：循环播放静音轨。
         // 仅靠 PiP 不足以在「锁屏」态维持 App 运行 —— 真机实测：锁屏后行情停更、
@@ -94,16 +94,16 @@ final class PiPController: NSObject, ObservableObject {
         layer.frame = CGRect(origin: .zero, size: TickerFrameRenderer.frameSize)
         containerView?.layer.addSublayer(layer)
         displayLayer = layer
-        LogCollector.shared.append("start: layer created")
+        LogCollector.shared.append("pip: start layer created")
 
         // 关键修复：图层没有默认时间基（日志已证实为纯黑画面根因），必须显式创建并设置。
         // 没有时间基准时，图层无法判定任何一帧何时显示，于是永不渲染。
         if let timebase = Self.makeControlTimebase() {
             CMTimebaseSetRate(timebase, rate: 1.0)
             layer.controlTimebase = timebase
-            LogCollector.shared.append("start: controlTimebase set rate=1.0")
+            LogCollector.shared.append("pip: start controlTimebase set rate=1.0")
         } else {
-            LogCollector.shared.append("start: controlTimebase 创建失败")
+            LogCollector.shared.append("pip: start controlTimebase 创建失败")
         }
 
         frameCount = 0
@@ -123,7 +123,7 @@ final class PiPController: NSObject, ObservableObject {
         framePump.start()
         isActive = true
         didStartFired = false
-        LogCollector.shared.append("start: framePump started, 准备启动 PiP")
+        LogCollector.shared.append("pip: start framePump started, 准备启动 PiP")
         attemptStartPiP(retry: 4)
     }
 
@@ -134,13 +134,13 @@ final class PiPController: NSObject, ObservableObject {
     private func attemptStartPiP(retry: Int) {
         guard let controller = pipController else { return }
         guard retry > 0 else {
-            LogCollector.shared.append("start: 重试耗尽，放弃启动 PiP")
+            LogCollector.shared.append("pip: start 重试耗尽，放弃启动 PiP")
             isActive = false   // 状态必须如实反映"没起来"，否则界面会谎报已开启
             return
         }
 
         if controller.isPictureInPicturePossible {
-            LogCollector.shared.append("start: pipPossible=true，调用 startPictureInPicture")
+            LogCollector.shared.append("pip: start pipPossible=true，调用 startPictureInPicture")
             controller.startPictureInPicture()
 
             // 看门狗：iOS 可能"静默忽略"启动请求（不报错、不回调）。
@@ -153,7 +153,7 @@ final class PiPController: NSObject, ObservableObject {
                 LogCollector.shared.append("pip: 启动请求未被系统受理（3 秒内无 didStart）")
             }
         } else {
-            LogCollector.shared.append("start: pipPossible=false，0.5s 后重试（剩余 \(retry - 1)）")
+            LogCollector.shared.append("pip: start pipPossible=false，0.5s 后重试（剩余 \(retry - 1)）")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.attemptStartPiP(retry: retry - 1)
             }
@@ -167,7 +167,7 @@ final class PiPController: NSObject, ObservableObject {
         removeDisplayLayer()
         KeepAliveAudio.shared.stop()
         isActive = false
-        LogCollector.shared.append("stop: done")
+        LogCollector.shared.append("pip: stop done")
     }
 
     /// 把显示层收回容器并移出视图层级。
@@ -216,7 +216,7 @@ final class PiPController: NSObject, ObservableObject {
 
     private func enqueue(_ pixelBuffer: CVPixelBuffer) {
         guard let layer = displayLayer else {
-            LogCollector.shared.append("enqueue: layer is nil")
+            LogCollector.shared.append("pip: enqueue: layer is nil")
             return
         }
         frameCount += 1
@@ -233,23 +233,23 @@ final class PiPController: NSObject, ObservableObject {
             presentationTime: pts
         ) else {
             if frameCount <= 3 {
-                LogCollector.shared.append("enqueue #\(frameCount): makeSampleBuffer FAILED")
+                LogCollector.shared.append("pip: enqueue #\(frameCount): makeSampleBuffer FAILED")
             }
             return
         }
 
         if layer.status == .failed {
             layer.flush()
-            LogCollector.shared.append("enqueue #\(frameCount): status failed -> flush")
+            LogCollector.shared.append("pip: enqueue #\(frameCount): status failed -> flush")
         }
         layer.enqueue(sampleBuffer)
 
         if frameCount <= 3 {
             LogCollector.shared.append(
-                "enqueue #\(frameCount): ok pts=\(pts.seconds) status=\(layer.status) ready=\(layer.isReadyForMoreMediaData) bounds=\(Int(layer.bounds.width))x\(Int(layer.bounds.height))"
+                "pip: enqueue #\(frameCount): ok pts=\(pts.seconds) status=\(layer.status) ready=\(layer.isReadyForMoreMediaData) bounds=\(Int(layer.bounds.width))x\(Int(layer.bounds.height))"
             )
         } else if frameCount == 10 {
-            LogCollector.shared.append("enqueue: 已投喂 10 帧")
+            LogCollector.shared.append("pip: enqueue: 已投喂 10 帧")
         }
     }
 
@@ -263,7 +263,7 @@ final class PiPController: NSObject, ObservableObject {
             .flatMap { $0.windows }
             .first(where: { $0.isKeyWindow })
         guard let window = window else {
-            LogCollector.shared.append("attach: no key window")
+            LogCollector.shared.append("pip: attach no key window")
             return
         }
 
@@ -279,7 +279,7 @@ final class PiPController: NSObject, ObservableObject {
         view.clipsToBounds = true
         window.addSubview(view)
         containerView = view
-        LogCollector.shared.append("attach: container 1x1 added")
+        LogCollector.shared.append("pip: attach container 1x1 added")
     }
 }
 
@@ -291,7 +291,7 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
-        LogCollector.shared.append("playback: setPlaying \(playing)")
+        LogCollector.shared.append("pip: playback setPlaying \(playing)")
 
         // 浮窗上的暂停键 = 停止报警。
         // 报警会一直响到用户按停止，而用户在别的 App 里时唯一能碰到的控件就是它，
