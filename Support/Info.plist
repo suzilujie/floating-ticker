@@ -38,6 +38,22 @@
 	     注：这个开关属于**主 App**（不是 Widget 扩展） -->
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<!-- 高频更新声明。这一条是行情场景的**必需项**，不是可选项：
+	     系统的实时活动更新预算是按"偶尔刷新"设计的（如外卖进度、比分），
+	     而本 App 要按秒刷新。不声明这个键，超出预算的更新会被系统
+	     **静默丢弃，且不产生任何报错或回调**。
+
+	     缺它的症状非常有特征，值得记下来：
+	       · 浮窗（PiP 视频层）照常跳动 —— 它不受 ActivityKit 预算约束；
+	       · 锁屏与灵动岛却**停更或一顿一顿** —— 看起来像"更新没生效"，
+	         实际是系统在按预算丢帧。
+	     这正是"灵动岛没跟随浮窗更新"最可能的原因。
+
+	     注：Apple 的 App Services 文档把该键描述为属于 "an app"，
+	     而多数实践指南写在 Widget 扩展的 Info.plist 里。两处都加以避免押错；
+	     多余的 Info.plist 键会被忽略，不会导致安装或审核问题。 -->
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

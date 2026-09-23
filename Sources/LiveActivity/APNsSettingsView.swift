@@ -41,6 +41,13 @@ struct APNsSettingsView: View {
                     Text("上次测试：\(testResult)")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+                // 失败原因**直接显示在界面上**，而不是只写日志：
+                // 点一次按钮就能看到"下一步该做什么"，否则没人会为了这个去翻日志。
+                if let diagnosis = APNsPusher.shared.lastFailureDiagnosis {
+                    Text(diagnosis)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text("设备 token：\(tokenPreview.isEmpty ? "点测试后显示" : tokenPreview)")
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
@@ -54,7 +61,7 @@ struct APNsSettingsView: View {
         tokenPreview = LiveActivityController.shared.pushTokenHex
             .map { String($0.prefix(16)) + "…" } ?? "无 token"
         LiveActivityController.shared.sendTestPush { ok in
-            testResult = ok ? "成功（HTTP 200）" : "失败（详见日志）"
+            testResult = ok ? "成功（HTTP 200）" : "失败（原因见下方）"
         }
     }
 }

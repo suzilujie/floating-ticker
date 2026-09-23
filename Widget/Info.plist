@@ -27,5 +27,10 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<!-- 高频更新声明（行情按秒刷新所必需，见主 App 的 Info.plist 里的详细说明）。
+	     与主 App 的 Info.plist 同时声明：Apple 文档的措辞是 "an app"，
+	     而多数实践指南写在扩展这一侧，两处都加以避免押错。 -->
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 </dict>
 </plist>

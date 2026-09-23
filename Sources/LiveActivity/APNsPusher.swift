@@ -23,6 +23,15 @@ final class APNsPusher {
     /// 是否具备发送条件（Key ID 与私钥都已配置）
     var isReady: Bool { APNsSettings.shared.isReady }
 
+    /// 最近一次失败的**可执行诊断**（供界面直接显示，不必翻日志）。
+    ///
+    /// 为什么必须做这层映射：Apple 返回的 `reason` 是精确的，但对使用者没有指向性。
+    /// 例如 `InvalidProviderToken` 的真实含义往往是
+    /// 「粘的不是 APNs Auth Key，而是 App Store Connect API 密钥」——
+    /// 两者都是 .p8、都有 10 位 Key ID，极易混淆，而本项目的 Ad Hoc 流水线用的正是后者。
+    /// 只看 reason 根本想不到这一层，于是会反复怀疑"是不是哪里抄错了"。
+    private(set) var lastFailureDiagnosis: String?
+
     private static let endpoint = "https://api.push.apple.com/3/device/"
 
     private init() {}
@@ -52,6 +61,12 @@ final class APNsPusher {
         request.setValue(topic, forHTTPHeaderField: "apns-topic")
         request.setValue("liveactivity", forHTTPHeaderField: "apns-push-type")
         request.setValue("10", forHTTPHeaderField: "apns-priority")
+        // 显式声明"过期即弃"（0 = 立即投递、不存储、不重投）。
+        // 对行情这种时效数据，「迟到的陈旧价」比「没有更新」更糟 ——
+        // 若让 APNs 存储后在设备恢复时批量投递，锁屏上会短暂显示一个
+        // 十几分钟前的价格，而且看不出它是旧的。下一个 tick 本来就会带来新价，
+        // 所以这一条丢了也无所谓。
+        request.setValue("0", forHTTPHeaderField: "apns-expiration")
         request.httpBody = payload
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -67,13 +82,62 @@ final class APNsPusher {
                 } else {
                     self.failedCount += 1
                     let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    let hint = Self.diagnose(status: status, body: body, topic: topic)
+                    self.lastFailureDiagnosis = hint
                     LogCollector.shared.append(
-                        "apns: ✗ 推送失败 \(priceText) status=\(status) err=\(error?.localizedDescription ?? "-") \(body.prefix(80))"
+                        "apns: ✗ 推送失败 \(priceText) status=\(status)"
+                            + "｜err=\(error?.localizedDescription ?? "-")"
+                            + "｜\(hint)"
+                            + "｜body=\(body.prefix(120))"
                     )
                 }
                 completion(ok)
             }
         }.resume()
+    }
+
+    // MARK: - 失败诊断
+
+    /// 把 APNs 的响应翻译成「下一步该做什么」。
+    ///
+    /// 判据是 Apple 返回的 `reason` 字段（不是 HTTP 状态码本身：
+    /// 400 下面有十来种完全不同的原因，处置方式也完全不同）。
+    private static func diagnose(status: Int, body: String, topic: String) -> String {
+        if body.contains("InvalidProviderToken") || body.contains("MissingProviderToken") {
+            return "APNs 不接受这份凭据。最常见的原因是**粘错了私钥**："
+                + "开发者后台有两种 .p8 —— App Store Connect API 密钥（给 CI 上传用）"
+                + "与 APNs Auth Key（给推送用），两者都是 .p8 且都有 10 位 Key ID。"
+                + "请到 Keys 页新建一把、勾选 APNs 服务，把它的 Key ID 与私钥成对填这里。"
+        }
+        if body.contains("BadDeviceToken") {
+            return "token 与推送环境不匹配：本 App 声明的是 aps-environment=production，"
+                + "若这个包是用开发证书装的（Xcode 直跑 / 免费账号侧载），"
+                + "拿到的是 sandbox token，需要改推 api.sandbox.push.apple.com。"
+                + "先确认装的是 Ad Hoc / App Store 包。"
+        }
+        if body.contains("DeviceTokenNotForTopic") {
+            return "topic 与 token 不配对：liveactivity 推送的 topic 必须是"
+                + "「主 App bundle id」+.push-type.liveactivity。当前 topic=\(topic)。"
+        }
+        if body.contains("TopicDisallowed") {
+            return "该 App ID 未开启推送能力：到开发者后台把 App ID 的 "
+                + "Push Notifications 勾上，并重新生成描述文件。"
+        }
+        if body.contains("ExpiredProviderToken") {
+            return "provider token 被判定为过期：检查设备时间是否准确（JWT 的 iat 依赖本机时钟）。"
+        }
+        if status == 410 {
+            return "token 已失效（活动可能已被结束或重建过）。App 会重新取 token，稍后再试。"
+        }
+        if status == 429 {
+            return "推送被限流。实时活动的推送预算有限，1 次/秒 的后台推送很可能已超预算 —— "
+                + "确认 Info.plist 已声明 NSSupportsLiveActivitiesFrequentUpdates，"
+                + "或降低后台推送频率。"
+        }
+        if status >= 500 {
+            return "APNs 侧暂时不可用（\(status)），稍后重试即可。"
+        }
+        return "status=\(status)（未识别的失败原因，原始 body 见日志）"
     }
 
     // MARK: - JWT 与负载

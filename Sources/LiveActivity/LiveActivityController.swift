@@ -311,9 +311,22 @@ final class LiveActivityController {
         )
 
         if isBackground, let token = pushToken, APNsPusher.shared.isReady {
-            // 后台/锁屏：走 APNs 推送（系统采用推送；本地 write 在此态不被采用）。
+            // 后台/锁屏：走 APNs 推送（系统采用推送；本地 write 在此态实测不被采用）。
             // 每次推送的结果在 APNsPusher 里记一行（成功/失败都记）。
-            APNsPusher.shared.pushUpdate(state, token: token, topic: Self.topic) { _ in }
+            APNsPusher.shared.pushUpdate(state, token: token, topic: Self.topic) { ok in
+                guard !ok else { return }
+                // **推送失败时补一次本地更新作为兜底。**
+                //
+                // 理由有两层：
+                //  1) 在 APNs 尚未打通（凭据/能力/环境任一环节不通）期间，
+                //     这条兜底能让锁屏与灵动岛至少不至于完全停摆，而不是干等修复。
+                //  2) 更重要：声明了 NSSupportsLiveActivitiesFrequentUpdates 之后，
+                //     「后台本地更新不被采用」这条既有结论**需要重新验证** ——
+                //     它很可能本来就是【更新预算耗尽】的表象，而不是后台本身的限制。
+                //     若重测后确认后台本地更新可用，APNs 就降级为纯兜底，
+                //     整条链路少一个外部依赖。
+                Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+            }
         } else {
             // 前台 / 无 token / 未配置凭据：本地更新，每次记一行便于排障
             LogCollector.shared.append("live: 本地更新 \(String(format: "%.1f", price))")
