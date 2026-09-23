@@ -110,6 +110,31 @@ final class LiveActivityController {
         LogCollector.shared.append("live: 实时活动已结束")
     }
 
+    // MARK: - 显示时机（灵动岛只在锁屏 / 后台出现）
+
+    /// 即将离开前台时调用（scenePhase 变为 inactive），创建实时活动。
+    ///
+    /// **为什么必须在这一刻创建**：iOS 只允许 App 在**前台**启动实时活动；
+    /// 真正进入后台后再 `request` 会失败。所以必须趁「还剩前台身份」时建好，
+    /// 锁屏后锁屏界面才有这条活动。见 ContentView 的 scenePhase 处理。
+    ///
+    /// 前提：浮窗必须开着 —— 浮窗是后台运行的唯一依据，没浮窗时锁屏也不会更新，
+    /// 建了只会显示一个冻住的价格，不如不建。
+    func showForBackground() {
+        guard PiPController.shared.isActive else {
+            LogCollector.shared.append("live: 浮窗未开启，跳过创建实时活动（锁屏不会有灵动岛）")
+            return
+        }
+        start()
+    }
+
+    /// 回到前台（解锁 / 切回 App）时调用：销毁实时活动，实现「灵动岛只在锁屏出现」。
+    func hideForForeground() {
+        guard activity != nil else { return }
+        LogCollector.shared.append("live: 回到前台 → 销毁实时活动（灵动岛只保留在锁屏）")
+        stop()
+    }
+
     /// App 前后台切换时由界面调用：作为取证日志的时间锚点。
     func noteAppState(isActive: Bool) {
         if isActive {
