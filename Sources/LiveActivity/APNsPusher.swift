@@ -14,6 +14,9 @@ import Foundation
 ///   详见 `jwtReuseInterval`。这是曾经让灵动岛彻底冻住的根因。
 /// - `apns-topic` 必须是 `<主 App bundle id>.push-type.liveactivity`
 /// - Ad Hoc / App Store 分发走 **production** 环境（`api.push.apple.com`）
+/// - 支持 **push-to-start**（`event: "start"`）：后台乃至 App 未启动时，由系统创建
+///   实时活动。用于「用户划掉灵动岛后自动恢复」—— 因为 `Activity.request` 只能
+///   在 App 前台调用，后台想重建活动只有这一条路。见 `pushStart`。
 final class APNsPusher {
 
     static let shared = APNsPusher()
@@ -66,9 +69,74 @@ final class APNsPusher {
         topic: String,
         completion: @escaping (Bool) -> Void
     ) {
+        guard let payload = Self.makePayload(state) else {
+            completion(false)
+            return
+        }
+        send(payload: payload, token: token, topic: topic,
+             action: "推送", detail: String(format: "%.1f", state.price),
+             completion: completion)
+    }
+
+    /// 用 **push-to-start** 让系统创建一条实时活动 —— **App 不必在前台**。
+    ///
+    /// 为什么必须有这条通道：`Activity.request` 只能在 App **前台**调用
+    /// （Apple 明文规定：后台只能 update / end）。所以"锁屏时用户把灵动岛划掉、
+    /// 我们想把它恢复"这件事在后台是**做不到**的 —— 之前那一版正是因此
+    /// 静默失败：重建请求发不出去，回到前台也没有补救，直到重启 App 才回来。
+    ///
+    /// push-to-start 是官方为这个场景准备的通道：拿 `Activity.pushToStartToken`
+    /// 发一条 `event: "start"` 的推送，由**系统**创建活动，App 不需要在前台。
+    ///
+    /// 载荷比 update 多三个必填项，缺一样系统都收不下：
+    /// - `attributes-type`：`ActivityAttributes` 的 **Swift 类型名**，必须逐字一致
+    /// - `attributes`：静态属性（我们的 `symbol`）
+    /// - `alert`：必须给，让用户知道活动被创建了
+    func pushStart(
+        symbol: String,
+        state: TickerActivityAttributes.ContentState,
+        token: String,
+        topic: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        let aps: [String: Any] = [
+            "timestamp": Int(Date().timeIntervalSince1970),
+            "event": "start",
+            "attributes-type": String(describing: TickerActivityAttributes.self),
+            "attributes": ["symbol": symbol],
+            "content-state": [
+                "price": state.price,
+                "changePercent": state.changePercent,
+                "updatedAt": state.updatedAt
+            ],
+            "alert": [
+                "title": "悬浮行情",
+                "body": "\(symbol) 灵动岛已恢复"
+            ]
+        ]
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["aps": aps]) else {
+            completion(false)
+            return
+        }
+        send(payload: payload, token: token, topic: topic,
+             action: "拉起", detail: String(format: "%.1f", state.price),
+             completion: completion)
+    }
+
+    /// 真正发请求（`pushUpdate` / `pushStart` 共用）。
+    ///
+    /// `action` 与 `detail` 只进日志文案，让两种动作在日志里可区分：
+    /// `apns: ✓ 推送成功 85773.0` / `apns: ✓ 拉起成功 85773.0`。
+    private func send(
+        payload: Data,
+        token: String,
+        topic: String,
+        action: String,
+        detail: String,
+        completion: @escaping (Bool) -> Void
+    ) {
         guard isReady,
               let jwt = providerToken(),
-              let payload = Self.makePayload(state),
               let url = URL(string: Self.endpoint + token) else {
             completion(false)
             return
@@ -93,11 +161,10 @@ final class APNsPusher {
                 guard let self = self else { return }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                 let ok = (status == 200) && (error == nil)
-                let priceText = String(format: "%.1f", state.price)
                 if ok {
                     self.sentCount += 1
                     // 每次推送结果都记一行，便于完整还原锁屏期间的推送轨迹
-                    LogCollector.shared.append("apns: ✓ 推送成功 \(priceText)")
+                    LogCollector.shared.append("apns: ✓ \(action)成功 \(detail)")
                 } else {
                     self.failedCount += 1
                     let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -109,7 +176,7 @@ final class APNsPusher {
                     let hint = Self.diagnose(status: status, body: body, topic: topic)
                     self.lastFailureDiagnosis = hint
                     LogCollector.shared.append(
-                        "apns: ✗ 推送失败 \(priceText) status=\(status)"
+                        "apns: ✗ \(action)失败 \(detail) status=\(status)"
                             + "｜err=\(error?.localizedDescription ?? "-")"
                             + "｜\(hint)"
                             + "｜body=\(body.prefix(120))"

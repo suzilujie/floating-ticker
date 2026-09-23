@@ -15,7 +15,9 @@ import UIKit
 /// 2. 生命周期：约 8 小时被系统结束 → 7.5 小时主动重建
 /// 3. 状态会变（ended / dismissed）→ 订阅 `activityStateUpdates` 自动重建
 /// 4. 活动「超出进程」存活 → 启动时收编遗留活动，避免多实例
-final class LiveActivityController {
+/// 5. 后台**不能** `Activity.request`（只能 update / end）→ 后台重建改走 push-to-start；
+///    两条都走不通就挂起，等回到前台补建（见 `restore` / `pendingRebuild`）
+final class LiveActivityController: ObservableObject {
 
     static let shared = LiveActivityController()
 
@@ -23,6 +25,15 @@ final class LiveActivityController {
     static var topic: String {
         (Bundle.main.bundleIdentifier ?? "com.xfish.floatingticker") + ".push-type.liveactivity"
     }
+
+    /// 活动的静态属性（币对名）。`Activity.request` 与 push-to-start 必须用同一个值，
+    /// 提成常量避免两处写歪。
+    private static let symbol = "BTC / USDT  永续"
+
+    /// 对外可见：当前**是否有一条活动存在**（供界面显示「显示中 / 已关闭」）。
+    ///
+    /// 注意它表示"活动存在"，不表示"系统此刻正把它画在灵动岛上" —— 后者只有系统知道。
+    @Published private(set) var isShowing = false
 
     private var activity: Activity<TickerActivityAttributes>?
     private var cancellable: AnyCancellable?
@@ -36,6 +47,29 @@ final class LiveActivityController {
 
     /// 当前活动的 APNs 推送 token（自推送用）
     private var pushToken: String?
+
+    /// **push-to-start** token（iOS 17.2+）。它与"某条活动"无关，是 **App 级**的：
+    /// 用它可以让系统在**我们不在前台**时创建一条实时活动。
+    private var pushToStartToken: String?
+    private var pushToStartTask: Task<Void, Never>?
+
+    /// 后台需要重建、但当场做不到时置位（后台不能 `request`，push-to-start 也不可用），
+    /// 等 App 回到前台再补一次。
+    ///
+    /// 没有它，重建请求会在后台**静默失败且永不重试** —— 那正是
+    /// "划掉灵动岛之后它再也不出现、直到重启 App"的根因。
+    private var pendingRebuild = false
+
+    /// 「认领」巡检：push-to-start 是**系统**创建的活动，App 手上没有引用，
+    /// 必须主动认领才能继续 update —— 否则卡片会出现，却立刻冻在初始值上。
+    private var adoptTimer: Timer?
+
+    /// 用户是否**手动关掉了**灵动岛（界面上的开关）。
+    ///
+    /// 关掉后不再自动恢复、也不认领，直到用户重新打开。这个标志位是必要的：
+    /// `stop()` 里的 `end()` 是**异步**的，在那之后的几百毫秒内旧活动仍是
+    /// `.active`，5 秒巡检可能抢在前面把它认领回来 —— 表现就是"关了又自己回来"。
+    private var userDisabled = false
 
     /// 后台/锁屏期间的更新计数（取证用）
     private var backgroundUpdateCount = 0
@@ -66,6 +100,10 @@ final class LiveActivityController {
 
     /// 开启实时活动并订阅行情。由主界面在启动时调用一次。
     func start() {
+        bootstrap()
+        // 走到这里一律视为"用户要它开着"（界面开关 / 启动 / 自动恢复）
+        userDisabled = false
+
         guard activity == nil else { return }
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
@@ -81,7 +119,7 @@ final class LiveActivityController {
             return
         }
 
-        let attributes = TickerActivityAttributes(symbol: "BTC / USDT  永续")
+        let attributes = TickerActivityAttributes(symbol: Self.symbol)
         let content = ActivityContent(
             state: TickerActivityAttributes.ContentState(
                 price: 0, changePercent: 0, updatedAt: Date().timeIntervalSince1970
@@ -118,6 +156,10 @@ final class LiveActivityController {
         let old = activity
         detach()
         backgroundUpdateCount = 0
+        // 用户主动关掉 → 清掉挂起的重建、并且**不再自动恢复/认领**
+        // （否则回到前台又冒出来，或在 end 生效前被巡检认领回来）
+        pendingRebuild = false
+        userDisabled = true
 
         guard let old = old else { return }
         Task { await old.end(nil, dismissalPolicy: .immediate) }
@@ -128,6 +170,13 @@ final class LiveActivityController {
     func noteAppState(isActive: Bool) {
         if isActive {
             LogCollector.shared.append("live: App 回到前台（后台期间共更新 \(backgroundUpdateCount) 次）")
+            // 后台做不成的事，回到前台立刻补 —— 此刻 `Activity.request` 才是合法的。
+            // 没有这一步，后台失败的重建会一直挂到用户重启 App。
+            if pendingRebuild, activity == nil {
+                pendingRebuild = false
+                LogCollector.shared.append("live: 补执行后台期间挂起的重建（此时已在前台）")
+                start()
+            }
         } else {
             LogCollector.shared.append("live: App 进入后台/锁屏（开始统计后台更新次数）")
         }
@@ -164,6 +213,7 @@ final class LiveActivityController {
     /// 绑定一条活动：订阅行情、盯状态、监听推送 token、起重建定时器。新建与收编共用。
     private func attach(to activity: Activity<TickerActivityAttributes>, reused: Bool) {
         self.activity = activity
+        isShowing = true
         didLogInactive = false
         lastUpdateAt = nil
 
@@ -201,7 +251,82 @@ final class LiveActivityController {
         cancellable = nil
         lastUpdateAt = nil
         activity = nil
+        isShowing = false
         didLogInactive = false
+    }
+
+    // MARK: - push-to-start 与「认领」
+
+    /// 只执行一次的准备工作：接 push-to-start token、起「认领」巡检。
+    private func bootstrap() {
+        observePushToStartToken()
+        startAdoptWatchdog()
+    }
+
+    /// 监听 push-to-start token（iOS 17.2+）。
+    ///
+    /// 这个 token 与"某条活动"无关，是 **App 级**的。token 会轮换，故要持续订阅。
+    /// 低于 17.2 的系统没有这个能力 —— 那后台就无法自动恢复，只能挂起到前台再补。
+    private func observePushToStartToken() {
+        guard pushToStartTask == nil else { return }
+
+        guard #available(iOS 17.2, *) else {
+            LogCollector.shared.append(
+                "live: 系统低于 17.2，不支持 push-to-start（后台将无法自动恢复灵动岛）"
+            )
+            return
+        }
+
+        if let data = Activity<TickerActivityAttributes>.pushToStartToken {
+            pushToStartToken = Self.hexToken(data)
+            LogCollector.shared.append(
+                "live: 已取得 push-to-start token（\(String(pushToStartToken!.prefix(8)))…）"
+            )
+        }
+
+        pushToStartTask = Task { [weak self] in
+            for await data in Activity<TickerActivityAttributes>.pushToStartTokenUpdates {
+                await MainActor.run {
+                    guard let self = self else { return }
+                    self.pushToStartToken = Self.hexToken(data)
+                    LogCollector.shared.append(
+                        "live: push-to-start token 已更新（\(String(self.pushToStartToken!.prefix(8)))…）"
+                    )
+                }
+            }
+        }
+    }
+
+    /// 「认领」巡检：每 5 秒看一眼 —— 若我们手上没有活动、而系统里有一条活跃的
+    /// （多半是 push-to-start 拉起来的），就认领它。
+    ///
+    /// 为什么必须有：push-to-start 由**系统**创建活动，App 手上没有引用 ——
+    /// 不认领的话 `update()` 会因 `activity == nil` 直接返回，
+    /// 卡片虽然出现了，却冻在初始值上，比不出现更迷惑。
+    private func startAdoptWatchdog() {
+        guard adoptTimer == nil else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            self?.adoptActiveIfNeeded()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        adoptTimer = timer
+    }
+
+    private func adoptActiveIfNeeded() {
+        guard activity == nil, !userDisabled else { return }
+
+        let active = Activity<TickerActivityAttributes>.activities
+            .filter { $0.activityState == .active }
+        guard let candidate = active.max(by: { $0.content.state.updatedAt < $1.content.state.updatedAt })
+        else { return }
+
+        // 顺带收掉多余的，避免又出现多实例
+        for extra in active where extra.id != candidate.id {
+            Task { await extra.end(nil, dismissalPolicy: .immediate) }
+        }
+
+        LogCollector.shared.append("live: 认领一条系统内的活跃实时活动（多半由 push-to-start 拉起）")
+        attach(to: candidate, reused: true)
     }
 
     // MARK: - 活动状态监听与自愈
@@ -215,9 +340,14 @@ final class LiveActivityController {
                     LogCollector.shared.append("live: 活动状态 → \(Self.describe(state))")
 
                     switch state {
-                    case .ended, .dismissed:
-                        LogCollector.shared.append("live: 活动已结束/被划掉 → 自动重建")
-                        self.rebuild()
+                    case .ended:
+                        // 系统结束（含约 8 小时上限）：必须恢复
+                        self.restore(reason: "活动被系统结束")
+                    case .dismissed:
+                        // 用户划掉。当前策略是**自动恢复**（锁屏上仍需要这张卡），
+                        // 恢复同样受"后台不能 request"约束，所以走 restore 分流。
+                        // 若要"划掉就不再出现"，把这里改成不处理即可。
+                        self.restore(reason: "活动被划掉")
                     default:
                         break
                     }
@@ -226,10 +356,48 @@ final class LiveActivityController {
         }
     }
 
-    private func rebuild() {
+    /// 需要把实时活动重新建起来时，统一走这里 —— **按前后台分流**。
+    ///
+    /// 关键约束：`Activity.request` 只能在 App **前台**调用（Apple 明文规定，
+    /// 后台只能 update / end）。所以后台要重建只有 push-to-start 一条路；
+    /// 两条都走不通就挂起，等回到前台再补（`pendingRebuild`）。
+    private func restore(reason: String) {
+        // 用户已手动关掉 → 不恢复。这道守卫是双保险：正常情况下 stop() 会 detach，
+        // 状态回调也随之取消，这里本就不会被触发。
+        guard !userDisabled else { return }
+
         detach()
         backgroundUpdateCount = 0
-        start()
+
+        guard UIApplication.shared.applicationState != .active else {
+            start()              // 前台：直接 request
+            return
+        }
+
+        // 后台：优先用 push-to-start，让**系统**替我们创建
+        if let token = pushToStartToken, APNsPusher.shared.isReady,
+           let snapshot = TickerStore.shared.snapshot {
+            let state = TickerActivityAttributes.ContentState(
+                price: snapshot.last,
+                changePercent: snapshot.changePercent,
+                updatedAt: Date().timeIntervalSince1970
+            )
+            LogCollector.shared.append("live: \(reason) → 后台用 push-to-start 拉起实时活动")
+            APNsPusher.shared.pushStart(
+                symbol: Self.symbol, state: state, token: token, topic: Self.topic
+            ) { [weak self] ok in
+                guard let self = self, !ok else { return }
+                // 推不出去就挂起等前台 —— 否则这次恢复会**静默丢失**
+                self.pendingRebuild = true
+                LogCollector.shared.append("live: push-to-start 失败 → 挂起，等回到前台补建")
+            }
+            return
+        }
+
+        pendingRebuild = true
+        LogCollector.shared.append(
+            "live: \(reason) → 后台无法重建（push-to-start 不可用），挂起等回到前台补建"
+        )
     }
 
     private static func describe(_ state: ActivityState) -> String {
@@ -252,7 +420,10 @@ final class LiveActivityController {
             base = "无活动（系统内残留 \(total) 条）"
         }
         let tok = pushToken != nil ? "有" : "无"
-        return "\(base) / token=\(tok) / 推送成\(APNsPusher.shared.sentCount)败\(APNsPusher.shared.failedCount)"
+        let boot = pushToStartToken != nil ? "有" : "无"
+        let pending = pendingRebuild ? " / 待补建" : ""
+        return "\(base) / token=\(tok)（start-token=\(boot)）"
+            + " / 推送成\(APNsPusher.shared.sentCount)败\(APNsPusher.shared.failedCount)\(pending)"
     }
 
     // MARK: - 推送 token
@@ -384,7 +555,8 @@ final class LiveActivityController {
             if let old = old {
                 await old.end(nil, dismissalPolicy: .immediate)
             }
-            await MainActor.run { self?.start() }
+            // 走 restore 而不是 start：在后台时 request 是非法的，需要 push-to-start
+            await MainActor.run { self?.restore(reason: "到达重建周期") }
         }
     }
 }

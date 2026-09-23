@@ -19,6 +19,7 @@ struct ContentView: View {
 
     @ObservedObject private var market = TickerStore.shared
     @ObservedObject private var pip = PiPController.shared
+    @ObservedObject private var live = LiveActivityController.shared
     @ObservedObject private var alert = AlertEngine.shared
     @ObservedObject private var pipStyle = PiPStyle.shared
 
@@ -103,6 +104,28 @@ struct ContentView: View {
                         }
                     } else {
                         InfoRow(title: "悬浮窗", value: "本机不支持画中画")
+                    }
+
+                    // 灵动岛（实时活动）：同为"一行一动作"。
+                    // 这里显示的是**活动是否存在**（它跟随 App），而不是"系统此刻有没有
+                    // 把它画在岛上"——后者只有系统知道。关掉之后，划掉卡片或系统到期
+                    // 都不会再自动恢复，直到这里重新打开。
+                    Button {
+                        if live.isShowing {
+                            live.stop()
+                        } else {
+                            live.start()
+                        }
+                    } label: {
+                        HStack {
+                            Text("灵动岛")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(live.isShowing ? "已开启 · 点此关闭" : "点此开启")
+                                .foregroundStyle(live.isShowing ? Color.secondary : Color.accentColor)
+                        }
+                        .font(.subheadline)
+                        .contentShape(Rectangle())
                     }
                 }
 
