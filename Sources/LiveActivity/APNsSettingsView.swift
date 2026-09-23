@@ -30,6 +30,10 @@ struct APNsSettingsView: View {
                     }
                 }
 
+            Text("凭据来源：\(settings.sourceDescription)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
             if settings.isReady {
                 Button("发送测试推送") { runTest() }
 

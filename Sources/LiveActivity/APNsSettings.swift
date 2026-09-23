@@ -28,8 +28,20 @@ final class APNsSettings: ObservableObject {
     private static let p8Key = "apns.p8.v1"
 
     private init() {
-        keyID = UserDefaults.standard.string(forKey: Self.keyIDKey) ?? ""
-        p8Content = UserDefaults.standard.string(forKey: Self.p8Key) ?? ""
+        let storedKeyID = UserDefaults.standard.string(forKey: Self.keyIDKey) ?? ""
+        let storedP8 = UserDefaults.standard.string(forKey: Self.p8Key) ?? ""
+        // 手动填写优先；本机没有则用**构建时注入**的凭据（CI 从仓库 Secrets 生成）。
+        // 注入的凭据随包分发，所以「重装后不用再填」是天然的。
+        keyID = storedKeyID.isEmpty ? InjectedAPNsCredentials.keyID : storedKeyID
+        p8Content = storedP8.isEmpty ? InjectedAPNsCredentials.p8Content : storedP8
+    }
+
+    /// 凭据来源（界面提示用）
+    var sourceDescription: String {
+        let manual = UserDefaults.standard.string(forKey: Self.keyIDKey) ?? ""
+        if !manual.isEmpty { return "手动填写（本机）" }
+        if !InjectedAPNsCredentials.keyID.isEmpty { return "构建时注入（随包分发）" }
+        return "未配置"
     }
 
     private func save() {
