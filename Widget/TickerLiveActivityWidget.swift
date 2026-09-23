@@ -109,7 +109,7 @@ private struct LockScreenCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(context.attributes.symbol)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(white: 0.72))
                 Text(TickerLiveActivityWidget.priceText(context.state.price))
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .monospacedDigit()
@@ -126,7 +126,7 @@ private struct LockScreenCard: View {
                 // 排查「数字冻住」这类问题时，这个时间戳就是设备端的地面真相。
                 Text(Date(timeIntervalSince1970: context.state.updatedAt), format: .dateTime.hour().minute().second())
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(white: 0.72))
             }
         }
         .padding(14)
