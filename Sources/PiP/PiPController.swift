@@ -357,10 +357,6 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         isActive = true
         didStartFired = true
         LogCollector.shared.append("pip: didStart")
-
-        // 浮窗真正开启 → 灵动岛（实时活动）才显示。
-        // 与 didStop 里的 LiveActivityController.stop() 成对，实现「灵动岛跟随浮窗」。
-        LiveActivityController.shared.start()
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(
@@ -379,11 +375,17 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         restoreRequested = false
 
         guard shouldAutoRestart else {
-            // 用户主动关闭浮窗：不再需要后台保活（浮窗都没了，锁屏继续跑也没意义）
-            KeepAliveAudio.shared.stop()
-            // 浮窗关了 → 灵动岛也不再显示（与 didStart 里的 start 成对）
-            LiveActivityController.shared.stop()
-            LogCollector.shared.append("pip: didStop（用户主动关闭浮窗）")
+            // 用户主动关闭浮窗。**只结束浮窗本身**，不再连带拆掉后台链路。
+            //
+            // 这里原先会 `KeepAliveAudio.stop()` + `LiveActivityController.stop()`，
+            // 依据是"浮窗都没了，锁屏继续跑也没意义"。但那个前提已经变了：
+            // 灵动岛与价格报警现在跟随 **App** 而非浮窗 —— 关掉浮窗后，用户依然
+            // 期望锁屏能看牌、后台报警依然生效。若在这里掐掉保活音频，App 会被
+            // 系统挂起，锁屏上的数字随即冻住，正是"关掉浮窗 = 全停摆"的老毛病。
+            //
+            // 保活音频的生命周期因此改由 App 决定：start() 里启动，只在
+            // 显式 stop() 时结束 —— 与浮窗是否在场无关。
+            LogCollector.shared.append("pip: didStop（用户主动关闭浮窗，后台监控继续运行）")
             return
         }
 

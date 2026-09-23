@@ -72,28 +72,28 @@ struct ContentView: View {
                 Section("运行状态") {
                     InfoRow(title: "行情", value: market.state.describe)
                     InfoRow(title: "数据源", value: market.activeSourceName)
-                    InfoRow(title: "悬浮窗", value: pip.isActive ? "已开启" : "未开启")
-
+                    // 悬浮窗：**整行即按钮** —— 点一下就把价格变成浮窗。
+                    //
+                    // 这里原先挤了三样东西（状态行 + 橙色警示 + 独立的"重新开启"按钮），
+                    // 用户得先读懂再找准按钮才敢点；现在状态与操作合成一行，
+                    // 点这一行的任何位置都算数。start() 自带 isActive 守卫，
+                    // 已开启时点它不会有副作用。
                     if AVPictureInPictureController.isPictureInPictureSupported() {
-                        if pip.isActive {
-                            Text("返回桌面即可看到悬浮窗。浮窗是后台运行的唯一依据——关掉它，价格报警在后台即失效。")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            // 点浮窗「还原」回 App、或手动关闭浮窗后，PiP 会话即结束。
-                            // 此时给出明确提示与一键重开入口，避免"以为在盯盘、其实已停摆"。
-                            Text("浮窗已关闭，价格报警在后台不再生效。")
-                                .font(.footnote)
-                                .foregroundStyle(.orange)
-
-                            Button("重新开启浮窗") {
-                                PiPController.shared.start()
+                        Button {
+                            PiPController.shared.start()
+                        } label: {
+                            HStack {
+                                Text("悬浮窗")
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(pip.isActive ? "已开启" : "点此开启")
+                                    .foregroundStyle(pip.isActive ? Color.secondary : Color.accentColor)
                             }
+                            .font(.subheadline)
+                            .contentShape(Rectangle())
                         }
                     } else {
-                        Text("本机不支持画中画，无法显示悬浮窗。")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                        InfoRow(title: "悬浮窗", value: "本机不支持画中画")
                     }
                 }
 
@@ -171,8 +171,13 @@ struct ContentView: View {
         PiPController.shared.start()
         market.start()
         AlertEngine.shared.start()
-        // 灵动岛（实时活动）不在这里启动 —— 改为跟随浮窗：
-        // 浮窗真正开启（PiP didStart）才启动，关闭浮窗时停止（见 PiPController）。
+        // 灵动岛（实时活动）跟随 **App**，而不是跟随浮窗：
+        // App 一启动就创建，只要它还在运行（在更新行情）就持续有效 ——
+        // 一锁屏，系统就把这张卡显示在锁屏与灵动岛上，不需要浮窗在场。
+        //
+        // 为什么改掉"跟随浮窗"：浮窗是会被系统随时结束的（启动请求被静默忽略、
+        // 被别的 App 的 PiP 顶掉、音频通道被抢占），而灵动岛不该跟着一起消失。
+        LiveActivityController.shared.start()
         // 正在播放信息：锁屏媒体卡 / 控制中心 / 灵动岛展开态显示行情。
         // 走的是音乐类 App 后台更新元数据的官方通道（我们的音频保活本就占着这个槽位）
         NowPlayingTicker.shared.start()
