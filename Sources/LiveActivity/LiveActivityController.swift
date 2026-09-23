@@ -311,10 +311,12 @@ final class LiveActivityController {
         )
 
         if isBackground, let token = pushToken, APNsPusher.shared.isReady {
-            // 后台/锁屏：走 APNs 推送（系统采用推送；本地 write 在此态不被采用）
+            // 后台/锁屏：走 APNs 推送（系统采用推送；本地 write 在此态不被采用）。
+            // 每次推送的结果在 APNsPusher 里记一行（成功/失败都记）。
             APNsPusher.shared.pushUpdate(state, token: token, topic: Self.topic) { _ in }
         } else {
-            // 前台 / 无 token / 未配置凭据：本地更新
+            // 前台 / 无 token / 未配置凭据：本地更新，每次记一行便于排障
+            LogCollector.shared.append("live: 本地更新 \(String(format: "%.1f", price))")
             Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
         }
     }

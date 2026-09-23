@@ -59,17 +59,17 @@ final class APNsPusher {
                 guard let self = self else { return }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                 let ok = (status == 200) && (error == nil)
+                let priceText = String(format: "%.1f", state.price)
                 if ok {
                     self.sentCount += 1
+                    // 每次推送结果都记一行，便于完整还原锁屏期间的推送轨迹
+                    LogCollector.shared.append("apns: ✓ 推送成功 \(priceText)")
                 } else {
                     self.failedCount += 1
-                    // 失败日志节流：前 3 次必记，之后每 10 次记一条，避免刷满环形缓冲
-                    if self.failedCount <= 3 || self.failedCount % 10 == 0 {
-                        let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                        LogCollector.shared.append(
-                            "apns: 推送失败 status=\(status) err=\(error?.localizedDescription ?? "-") \(body.prefix(120))"
-                        )
-                    }
+                    let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    LogCollector.shared.append(
+                        "apns: ✗ 推送失败 \(priceText) status=\(status) err=\(error?.localizedDescription ?? "-") \(body.prefix(80))"
+                    )
                 }
                 completion(ok)
             }

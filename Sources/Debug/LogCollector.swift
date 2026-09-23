@@ -10,7 +10,9 @@ final class LogCollector {
 
     private let lock = NSLock()
     private var lines: [String] = []
-    private let maxLines = 300
+    /// 环形缓冲行数。之前 300 行在「每次更新都记一行」后会很快绕回、丢掉早期记录，
+    /// 放大到 3000（约 50 分钟的前台 1 次/秒日志量），保证锁屏测试期间的轨迹完整。
+    private let maxLines = 3000
 
     private init() {}
 
