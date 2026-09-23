@@ -171,7 +171,8 @@ struct ContentView: View {
         PiPController.shared.start()
         market.start()
         AlertEngine.shared.start()
-        LiveActivityController.shared.start()
+        // 灵动岛（实时活动）不在这里启动 —— 改为跟随浮窗：
+        // 浮窗真正开启（PiP didStart）才启动，关闭浮窗时停止（见 PiPController）。
         // 正在播放信息：锁屏媒体卡 / 控制中心 / 灵动岛展开态显示行情。
         // 走的是音乐类 App 后台更新元数据的官方通道（我们的音频保活本就占着这个槽位）
         NowPlayingTicker.shared.start()

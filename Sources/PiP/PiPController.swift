@@ -357,6 +357,10 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         isActive = true
         didStartFired = true
         LogCollector.shared.append("pip: didStart")
+
+        // 浮窗真正开启 → 灵动岛（实时活动）才显示。
+        // 与 didStop 里的 LiveActivityController.stop() 成对，实现「灵动岛跟随浮窗」。
+        LiveActivityController.shared.start()
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(
@@ -377,6 +381,8 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         guard shouldAutoRestart else {
             // 用户主动关闭浮窗：不再需要后台保活（浮窗都没了，锁屏继续跑也没意义）
             KeepAliveAudio.shared.stop()
+            // 浮窗关了 → 灵动岛也不再显示（与 didStart 里的 start 成对）
+            LiveActivityController.shared.stop()
             LogCollector.shared.append("pip: didStop（用户主动关闭浮窗）")
             return
         }
