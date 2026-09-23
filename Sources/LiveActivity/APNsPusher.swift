@@ -10,6 +10,8 @@ import Foundation
 ///
 /// 关键点：
 /// - 签名用 ES256 JWT（Apple 要求的 provider token），私钥是用户手动粘贴进 App 的 .p8
+/// - **provider token 必须缓存复用**（同一份 JWT 至少用 20 分钟）——
+///   详见 `jwtReuseInterval`。这是曾经让灵动岛彻底冻住的根因。
 /// - `apns-topic` 必须是 `<主 App bundle id>.push-type.liveactivity`
 /// - Ad Hoc / App Store 分发走 **production** 环境（`api.push.apple.com`）
 final class APNsPusher {
@@ -34,6 +36,23 @@ final class APNsPusher {
 
     private static let endpoint = "https://api.push.apple.com/3/device/"
 
+    /// 缓存的 provider token（JWT）及其签发时间与 Key ID。
+    /// 见 `jwtReuseInterval` —— **缓存是 Apple 的硬性要求，不是性能优化**。
+    private var cachedJWT: (token: String, issuedAt: Date, keyID: String)?
+
+    /// provider token 的复用时长。
+    ///
+    /// **这是 Apple 的硬性约束**：APNs 要求同一个 provider token **至少复用 20 分钟**
+    /// 才允许重新签发。`iat` 变化过快会返回 `429 TooManyProviderTokenUpdates`，
+    /// 且**拒绝该 Key 当时的全部推送** —— 不是"这一条失败"，是整批失败。
+    ///
+    /// token 自签发起 1 小时内有效，这里取 50 分钟：远高于 20 分钟的下限，
+    /// 又留出 10 分钟不与 1 小时上限相撞。
+    ///
+    /// 血泪实证：之前每条推送都调一次 JWT 签名 → 每秒一个新 token →
+    /// 真机锁屏期间 131 次推送 129 次被拒（`推送成2败129`），灵动岛因此冻住。
+    private static let jwtReuseInterval: TimeInterval = 50 * 60
+
     private init() {}
 
     /// 推送一条「更新实时活动」的请求。
@@ -48,7 +67,7 @@ final class APNsPusher {
         completion: @escaping (Bool) -> Void
     ) {
         guard isReady,
-              let jwt = Self.makeJWT(),
+              let jwt = providerToken(),
               let payload = Self.makePayload(state),
               let url = URL(string: Self.endpoint + token) else {
             completion(false)
@@ -82,6 +101,11 @@ final class APNsPusher {
                 } else {
                     self.failedCount += 1
                     let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    // token 被 APNs 判为过期/无效 → 丢掉缓存，下次推送重新签发（自愈）。
+                    // 不这么做，一个坏 token 会让后续推送一直失败到缓存自然到期。
+                    if body.contains("ExpiredProviderToken") || body.contains("InvalidProviderToken") {
+                        self.invalidateProviderToken()
+                    }
                     let hint = Self.diagnose(status: status, body: body, topic: topic)
                     self.lastFailureDiagnosis = hint
                     LogCollector.shared.append(
@@ -126,6 +150,15 @@ final class APNsPusher {
         if body.contains("ExpiredProviderToken") {
             return "provider token 被判定为过期：检查设备时间是否准确（JWT 的 iat 依赖本机时钟）。"
         }
+        if body.contains("TooManyProviderTokenUpdates") {
+            return "provider token 换得太频繁：APNs 要求同一个 JWT **至少复用 20 分钟**，"
+                + "而本 App 之前每条推送都重新签发（每秒一个新 token）→ 被判为异常并拒绝整批推送。"
+                + "现已改为缓存复用 50 分钟。若仍失败，等 1~2 分钟让限流窗口滑出后再试。"
+        }
+        if body.contains("TooManyRequests") {
+            return "推送频率超出预算：实时活动推送本身也有速率上限。"
+                + "可降低后台推送频率，或确认已声明 NSSupportsLiveActivitiesFrequentUpdates。"
+        }
         if status == 410 {
             return "token 已失效（活动可能已被结束或重建过）。App 会重新取 token，稍后再试。"
         }
@@ -142,12 +175,36 @@ final class APNsPusher {
 
     // MARK: - JWT 与负载
 
-    /// 构造 provider token（ES256 JWT）：header.kid=KeyID，payload.iss=TeamID。
-    private static func makeJWT() -> String? {
+    /// 取 provider token：**命中缓存就直接复用**，只有超过复用期才重新签发。
+    ///
+    /// 缓存带上 Key ID：换了凭据（换 Key）自动作废，不会拿旧 Key 的 token 去推。
+    private func providerToken() -> String? {
         let s = APNsSettings.shared
         let keyID = s.keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !keyID.isEmpty, s.p8Content.contains("PRIVATE KEY") else { return nil }
 
+        if let cached = cachedJWT,
+           cached.keyID == keyID,
+           Date().timeIntervalSince(cached.issuedAt) < Self.jwtReuseInterval {
+            return cached.token
+        }
+
+        guard let fresh = signJWT(keyID: keyID) else { return nil }
+        cachedJWT = (fresh, Date(), keyID)
+        return fresh
+    }
+
+    /// 清掉缓存的 provider token（APNs 判其过期/无效时调用，让下次推送重新签发）。
+    private func invalidateProviderToken() {
+        cachedJWT = nil
+    }
+
+    /// 签发一份 provider token（ES256 JWT）：header.kid=KeyID，payload.iss=TeamID。
+    ///
+    /// 只在 `providerToken()` 判定缓存过期时调用 —— **不要在推送路径上直接调它**，
+    /// 否则就回到了"每秒换 token"的老问题（见 `jwtReuseInterval`）。
+    private func signJWT(keyID: String) -> String? {
+        let s = APNsSettings.shared
         let header: [String: Any] = ["alg": "ES256", "kid": keyID]
         let payload: [String: Any] = ["iss": APNsSettings.teamID, "iat": Int(Date().timeIntervalSince1970)]
 
