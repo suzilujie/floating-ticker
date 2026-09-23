@@ -141,20 +141,18 @@ struct ContentView: View {
         .onAppear {
             startIfNeeded()
         }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
-            if newPhase == .active {
-                // 回到前台（含锁屏解锁）：
-                // ① 销毁实时活动 —— 灵动岛只在锁屏出现，用手机时不该占着它
-                // ② 立即核对数据新鲜度 —— 后台期间连接可能已被静默掐断
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                // 回到前台（含锁屏解锁）立即核对数据新鲜度：后台期间连接可能已被静默掐断，
+                // 这一步让用户一眼就看到最新价格，而不用干等看门狗的下一个周期。
+                // 同时汇报后台期间的实时活动更新次数——排查「锁屏后冻住」的关键证据。
                 LiveActivityController.shared.noteAppState(isActive: true)
-                LiveActivityController.shared.hideForForeground()
                 market.checkFreshness()
-            } else if oldPhase == .active {
-                // 从「前台」离开（锁屏 / 切走 / 下拉控制中心）：
-                // 趁此刻**立即创建**实时活动 —— iOS 只允许前台启动实时活动，
-                // 真正进入后台后再 request 会失败（见 showForBackground 注释）。
+            case .background:
                 LiveActivityController.shared.noteAppState(isActive: false)
-                LiveActivityController.shared.showForBackground()
+            default:
+                break
             }
         }
     }

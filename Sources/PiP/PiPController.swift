@@ -357,10 +357,10 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         isActive = true
         didStartFired = true
         LogCollector.shared.append("pip: didStart")
-        // 注意：这里**不**创建实时活动。
-        // 灵动岛改为「只在锁屏/后台出现」，由 scenePhase 在即将离开前台时创建
-        // （见 LiveActivityController.showForBackground）—— 因为 iOS 只允许
-        // 前台创建实时活动，前台建了反而会让用手机时也占着灵动岛。
+
+        // 浮窗真正开启 → 灵动岛（实时活动）才显示。
+        // 与 didStop 里的 LiveActivityController.stop() 成对，实现「灵动岛跟随浮窗」。
+        LiveActivityController.shared.start()
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(
