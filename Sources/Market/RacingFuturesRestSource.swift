@@ -105,7 +105,10 @@ final class RacingFuturesRestSource: MarketDataSource {
     // MARK: - 运行时状态
 
     private var currentVenue: Venue?
+    /// 下一次轮询的一次性定时器（每次轮次收尾后重新安排，见 `scheduleNextPoll`）
     private var timer: Timer?
+    /// 上一次**发起**轮询的时刻，作为"目标节拍"的基准
+    private var lastPollAt: Date?
     private var isStopped = false
 
     /// 本轮尚未返回的请求数（含兜底）。非 0 时跳过本轮 —— 避免慢网络下请求堆积。
@@ -127,6 +130,14 @@ final class RacingFuturesRestSource: MarketDataSource {
     /// 解析失败只完整打一次（含响应片段），避免每 2 秒刷屏
     private var didLogParseFailure = false
 
+    /// 最近一次「轮次收尾」的时刻（本轮所有请求都已有结论）。
+    ///
+    /// 用途：让上层能区分两种"没数据"，这是**不做无谓重建的关键**：
+    /// - **网络不通**：轮次仍在每 2 秒正常收尾（每轮都以"全失败"结束）→ 上层什么都不用做，
+    ///   网络恢复后下一轮自然就拉到数据了；
+    /// - **轮询器卡死**：长时间没有任何轮次收尾（定时器丢失、计数乱了）→ 才需要重建。
+    private(set) var lastRoundFinishedAt: Date?
+
     /// 轮次代次：`start` / `stop` / 每轮轮询都会自增。
     ///
     /// 每条请求都带着"发出时的代次"，回调时代次对不上就**整条丢弃**。
@@ -140,21 +151,19 @@ final class RacingFuturesRestSource: MarketDataSource {
     func start() {
         isStopped = false
         currentVenue = nil
+        lastRoundFinishedAt = nil
         generation += 1        // 作废上一轮遗留的所有在途回调
         resetRound()
 
         onState?(.connecting)
         LogCollector.shared.append(
-            "market: 启动 REST 轮询（每 \(Int(Self.interval)) 秒）"
+            "market: 启动 REST 轮询（目标节拍 \(Int(Self.interval)) 秒）"
                 + "｜主源 OKX + Binance 竞速，兜底 \(Self.fallback.display)"
         )
 
-        let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
-            self?.poll()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-        poll()   // 立即拉一次，不等第一个周期
+        timer?.invalidate()
+        timer = nil
+        poll()   // 立即拉一次；之后的节拍由「每轮收尾后安排下一次」驱动
     }
 
     func stop() {
@@ -169,6 +178,7 @@ final class RacingFuturesRestSource: MarketDataSource {
 
     private func resetRound() {
         pending = 0
+        lastPollAt = nil
         primariesPending = 0
         primarySucceeded = false
         fallbackSent = false
@@ -181,6 +191,7 @@ final class RacingFuturesRestSource: MarketDataSource {
 
     private func poll() {
         guard !isStopped, pending == 0 else { return }
+        lastPollAt = Date()
         generation += 1
         let gen = generation
         failedThisRound.removeAll()
@@ -268,6 +279,38 @@ final class RacingFuturesRestSource: MarketDataSource {
             )
             fetch(Self.fallback, generation: gen)
         }
+
+        // 轮次真正收尾：本轮所有请求（含兜底）都已有结论 —— 无论成败都算。
+        // 这一行是上层"判断轮询器还活着"的唯一依据（见 `lastRoundFinishedAt`）。
+        if gen == generation, pending == 0 {
+            lastRoundFinishedAt = Date()
+            scheduleNextPoll()
+        }
+    }
+
+    /// 安排下一次轮询（一次性，每轮收尾后重新安排）。
+    ///
+    /// **为什么不用"固定重复定时器"**：重复定时器是踩在固定的 2 秒网格上的 ——
+    /// 一旦某轮耗时略微超过 2 秒，就会**错过整整一格**，节奏直接掉到 4 秒
+    /// （典型场景：某家源要等满 2.5 秒超时 → 轮询频率被砍半）。
+    ///
+    /// 这里按"目标节拍"来：下一次定在「上一次发起时刻 + interval」；若那一刻
+    /// 已经过去（说明本轮比周期还长），就立刻发。于是实际节奏恒为
+    /// `max(interval, 一轮耗时)`，不会被 2 秒网格放大。
+    ///
+    /// 副作用（已知并接受）：若某轮**永远不收尾**，这里就不会安排下一次 ——
+    /// 那属于"轮询器卡死"，由 `TickerStore` 的看门狗负责重建。
+    private func scheduleNextPoll() {
+        timer?.invalidate()
+        guard !isStopped else { return }
+
+        let base = lastPollAt ?? Date()
+        let delay = max(0, base.addingTimeInterval(Self.interval).timeIntervalSinceNow)
+        let next = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            self?.poll()
+        }
+        RunLoop.main.add(next, forMode: .common)
+        self.timer = next
     }
 
     /// 是否应当**采用**这条结果（否则先暂存等当前所的结论）。

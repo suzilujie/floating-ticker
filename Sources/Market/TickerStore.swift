@@ -18,10 +18,14 @@ import Network
 /// 冗余方式：**同时向 OKX 与 Binance 各拉一次，先返回者胜**（见 `RacingFuturesRestSource`）。
 /// 任一交易所变慢或不可达时，另一家无需任何切换逻辑就能顶上。
 ///
-/// 仍然保留的三层守卫（REST 也会失败，只是故障形态简单得多）：
-///   1) **数据停滞看门狗**：超过 `stallThreshold` 秒无数据即重建轮询器 —— 永不放弃
-///   2) **网络状态监听**：网络由「不可达」恢复为「可达」时立即补一次
-///   3) **回到前台检查**：App 回到前台时立刻核对数据新鲜度，停滞则立即自愈
+/// 自愈策略（本版刻意做减法，**不再有"失败触发"的重建循环**）：
+///   1) **一轮失败就放弃这一轮** —— 什么都不做，等 2 秒后的下一轮。
+///      轮询器本身就是自愈的，不需要任何外部干预；
+///   2) **轮询器卡死兜底**：只在「长时间没有任何**轮次收尾**」
+///      （≥ `pollerStallThreshold`）时才重建一次；
+///   3) **回到前台**：同样只在轮询器疑似卡死时动手。
+///
+/// 网络恢复（NWPathMonitor）**不做任何动作**、只记一行日志 —— 下一轮 ≤2 秒自然恢复。
 ///
 /// 线程约束：所有对外状态变更统一在主线程（数据源回调在此处归拢），
 /// 故下游（界面、报警引擎）无需再处理线程问题。
@@ -56,14 +60,23 @@ final class TickerStore: ObservableObject {
     /// 方向说明：用回调而非直接调用 AlertEngine，保持依赖单向（Alert → Market）。
     var onSourceChanged: ((String) -> Void)?
 
-    private var source: MarketDataSource?
+    /// 存具体类型而非 `MarketDataSource`：需要读轮询器的存活信号
+    /// `lastRoundFinishedAt`，用它区分"网络不通"与"轮询器卡死"。
+    private var source: RacingFuturesRestSource?
     private var stallTimer: Timer?
 
     // MARK: - 永续守护参数
 
-    /// 停滞阈值：轮询周期 2 秒，超过该秒数仍无数据即判定停滞并开始自愈。
-    /// 取 10 秒 = 容忍连续 5 次轮询失败，既不至于误判，也不让用户干等太久。
-    private static let stallThreshold: TimeInterval = 10
+    /// 轮询器「卡死」判定阈值 —— **不是"网络不好"的判定**。
+    ///
+    /// 判据取的是「多久没有任何**轮次收尾**」，而不是「多久没有数据」。这个区别是本版的关键：
+    /// - **网络断了**：轮次仍在每 2 秒正常收尾（只是每轮都全失败）→ **不做任何干预**，
+    ///   网络一恢复、下一轮自然就拉到数据；
+    /// - **轮询器自己卡死**（定时器丢失、计数异常）→ 长时间没有任何轮次收尾 → 才重建一次。
+    ///
+    /// 取 60 秒：轮询周期 2 秒，60 秒等于连续 30 轮都没收尾 —— 足够说明是它卡住了。
+    /// （早先取 10 秒、判"没数据"，会把正常的网络抖动也判成卡死，触发无谓重建。）
+    private static let pollerStallThreshold: TimeInterval = 60
 
     /// 自愈冷却：真正断网时避免高频重建（无谓耗电），也让每轮自愈有完整观察窗口。
     private static let recoveryCooldown: TimeInterval = 10
@@ -109,10 +122,13 @@ final class TickerStore: ObservableObject {
         racing.onState = { [weak self] newState in
             DispatchQueue.main.async {
                 guard let self = self, self.source === racing else { return }
+                // 只更新状态（界面据此显示「失败：…」）。
+                //
+                // **刻意不在这里做任何"恢复"动作**：轮询器本身就是自愈的 ——
+                // 一轮失败只是"这一轮没拿到"，2 秒后的下一轮自然重来。
+                // 早先版本在这里顺手重建轮询器，结果三家全不通时变成
+                // "每轮失败都触发一次重建"的循环，既无必要、又打乱了正常节奏。
                 self.state = newState
-                if case .failed(let reason) = newState {
-                    self.attemptRecovery(reason: "连接失败（\(reason)）")
-                }
             }
         }
 
@@ -140,32 +156,33 @@ final class TickerStore: ObservableObject {
         LogCollector.shared.append("market: 已全部停止")
     }
 
-    /// 回到前台时调用：若数据已停滞则立即自愈，不必等看门狗的下一个检查周期。
+    /// 回到前台时调用：同样**只在"轮询器疑似卡死"时才动手**。
+    ///
+    /// 正常情况下什么都不做 —— 轮询器自己每 2 秒在跑，回到前台时最新价早就有了。
     func checkFreshness() {
-        let gap = Date().timeIntervalSince(referenceTime)
-        guard gap > Self.stallThreshold else { return }
-        LogCollector.shared.append("market: 回到前台，检测到 \(Int(gap)) 秒无数据 → 立即自愈")
+        guard let source = source else { return }
+        let since = source.lastRoundFinishedAt ?? sourceActivatedAt
+        let idle = Date().timeIntervalSince(since)
+        guard idle > Self.pollerStallThreshold else { return }
+        LogCollector.shared.append(
+            "market: 回到前台，轮询器已 \(Int(idle)) 秒没有轮次收尾 → 重建一次"
+        )
         forceRecover(reason: "回到前台")
     }
 
     // MARK: - 自愈闭环
 
-    /// 当前源上一次「应该有数据」的参考时刻。
+    /// 轮询器存活看门狗：每 5 秒核对一次「轮询器还在不在转」。
     ///
-    /// 取「最后一条数据时间」与「本源激活时刻」的较晚者 ——
-    /// 这样刚启动/重建源时会有一段宽限期，不会因「还没拿到第一笔」而误判停滞。
-    private var referenceTime: Date {
-        if let last = lastTickAt, last > sourceActivatedAt { return last }
-        return sourceActivatedAt
-    }
-
-    /// 停滞看门狗：每 5 秒核对一次数据新鲜度。
+    /// 注意它**不看有没有数据**，只看有没有轮次收尾 —— 因此网络中断期间它完全不介入，
+    /// 只有轮询器真的卡死才动手。详见 `pollerStallThreshold`。
     private func startStallWatchdog() {
         let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let gap = Date().timeIntervalSince(self.referenceTime)
-            guard gap > Self.stallThreshold else { return }
-            self.attemptRecovery(reason: "\(Int(gap)) 秒无数据")
+            guard let self = self, let source = self.source else { return }
+            let since = source.lastRoundFinishedAt ?? self.sourceActivatedAt
+            let idle = Date().timeIntervalSince(since)
+            guard idle > Self.pollerStallThreshold else { return }
+            self.attemptRecovery(reason: "轮询器 \(Int(idle)) 秒没有任何轮次收尾")
         }
         RunLoop.main.add(timer, forMode: .common)
         stallTimer = timer
@@ -186,7 +203,7 @@ final class TickerStore: ObservableObject {
         source.start()
     }
 
-    /// 供「网络恢复 / 回到前台」使用：绕过冷却，立即恢复。
+    /// 绕过冷却立即重建（目前只有「回到前台且疑似卡死」用得到）。
     private func forceRecover(reason: String) {
         lastRecoveryAt = nil
         attemptRecovery(reason: reason)
@@ -214,8 +231,9 @@ final class TickerStore: ObservableObject {
                 self.networkWasSatisfied = satisfied
 
                 if satisfied, wasSatisfied == false {
-                    LogCollector.shared.append("market: 网络已恢复 → 立即补一次行情")
-                    self.forceRecover(reason: "网络恢复")
+                    // 只记一行日志、不做任何动作：轮询器每 2 秒本来就会重试，
+                    // 下一轮（≤2 秒）自然就拿到数据了。
+                    LogCollector.shared.append("market: 网络已恢复，下一轮轮询将自然恢复")
                 }
             }
         }
