@@ -5,30 +5,24 @@ import UIKit
 
 /// 实时活动（Live Activity）控制器：把行情显示在**锁屏**与**灵动岛**上。
 ///
-/// **重要前提（务必知悉）**：Live Activity 的本地更新依赖 **App 进程存活** ——
-/// 若 App 被 iOS 挂起，`update()` 根本没法调用，锁屏/灵动岛上的数字就会冻住。
-/// 所以它是「保活」的**受益者**，而不是保活手段：保活成功，它才能实时刷新。
+/// **重要前提**：Live Activity 的本地更新依赖 App 进程存活；锁屏/后台时
+/// 本地 `update()` 实测**不被系统采用**。因此本版引入 **APNs 推送**：
+/// 后台/锁屏时由 App「自己给自己发推送」（见 `APNsPusher`），走系统专门为
+/// 「App 挂起也要更新」设计的通道；前台仍用本地 `update()`（更快、无网络往返）。
 ///
-/// 四条平台限制（已处理）：
-/// 1. **更新频率**：Apple 建议不超过 ~1 次/秒，更密会被节流甚至丢弃 → 本类做了节流
-/// 2. **生命周期**：一条实时活动约 **8 小时**后被系统结束（锁屏再保留约 4 小时）
-///    → 本类到达 7.5 小时会主动结束并重建
-/// 3. **状态会变**：活动可能被系统结束、被用户划掉。此时本地 `activity` 引用**不会失效**，
-///    `update()` 会**静默变成空操作**（不报错、不恢复），表现为数字永久冻住。
-///    → 订阅 `activityStateUpdates`，发现 ended / dismissed 自动重建（见 `observeActivityState`）
-/// 4. **活动会「超出进程」存活（本版修复）**：实时活动**不随 App 进程结束而消失** ——
-///    App 被系统回收、崩溃、或用户上滑杀进程时，已开启的活动仍留在锁屏 / 灵动岛上。
-///    新进程拿不到旧活动的引用，若直接再 `request` 一条，就会**多实例并存**，
-///    而旧实例**永远不会再被更新**（表现：几个数字里有的在动、有的冻住）。
-///    → 启动时先「收编」：挑最近更新的一条继续用，其余全部结束（见 `adoptExistingActivity`）
-///
-/// 取证：后台/锁屏期间的更新次数持续累计（见 `backgroundUpdateCount`），
-/// 由健康心跳（`HealthHeartbeat`）每 10 秒汇总成一行输出 —— 用来确证
-/// 「锁屏时到底有没有在推」。真机排查这类问题时，这一条最关键：
-/// 否则无法区分「App 没在更新」与「更新了但系统没用上」。
+/// 已处理的平台约束：
+/// 1. 更新频率：前台 ~1 次/秒；后台/锁屏改走推送（推送本身仍受系统调度）
+/// 2. 生命周期：约 8 小时被系统结束 → 7.5 小时主动重建
+/// 3. 状态会变（ended / dismissed）→ 订阅 `activityStateUpdates` 自动重建
+/// 4. 活动「超出进程」存活 → 启动时收编遗留活动，避免多实例
 final class LiveActivityController {
 
     static let shared = LiveActivityController()
+
+    /// APNs 推送 topic：`<主 App bundle id>.push-type.liveactivity`
+    static var topic: String {
+        (Bundle.main.bundleIdentifier ?? "com.xfish.floatingticker") + ".push-type.liveactivity"
+    }
 
     private var activity: Activity<TickerActivityAttributes>?
     private var cancellable: AnyCancellable?
@@ -37,29 +31,19 @@ final class LiveActivityController {
 
     /// 活动状态监听任务（见 observeActivityState）
     private var stateTask: Task<Void, Never>?
+    /// 推送 token 监听任务（见 observePushToken）
+    private var tokenTask: Task<Void, Never>?
 
-    /// 后台/锁屏期间的更新计数（取证用）。
-    /// 回到前台时清零并在日志里汇报总数 —— 这是「锁屏期间是否一直在推」的直接证据。
+    /// 当前活动的 APNs 推送 token（自推送用）
+    private var pushToken: String?
+
+    /// 后台/锁屏期间的更新计数（取证用）
     private var backgroundUpdateCount = 0
     /// 活动非 active 时只记一次日志，避免每秒刷屏
     private var didLogInactive = false
 
-    /// 前台更新间隔：实测/官方建议实时活动更新不超过 ~1 次/秒。
-    /// 我们的行情约每秒一条，节流后正好每笔都更新；抖动时也不会连发。
     private static let foregroundUpdateInterval: TimeInterval = 1.0
-
-    /// 后台 / 锁屏更新间隔。
-    ///
-    /// **本档已回退为 1 秒（与前台一致）**：曾按 Apple「后台降低更新频率」的通用建议
-    /// 放宽到 15 秒，但**真机对比显示没有任何改善，反而让锁屏刷新更迟钝**
-    /// （可从日志里「后台更新 N 次」的增速、以及锁屏卡片的秒级时间戳观察到）。
-    ///
-    /// 这条对比有价值：它说明本场景下「系统是否采用更新」**与频率无关** ——
-    /// 我们的本地 update() 一直在调（日志可证），但系统在锁屏态不采用。
-    /// 因此锁屏显示改走另一条被官方支持的后台通道（见 NowPlayingTicker）。
     private static let backgroundUpdateInterval: TimeInterval = 1.0
-
-    /// 重建周期：系统约 8 小时结束活动，这里提前到 7.5 小时重建，留安全余量。
     private static let recreateAfter: TimeInterval = 7.5 * 3600
 
     private init() {}
@@ -77,26 +61,41 @@ final class LiveActivityController {
             return
         }
 
-        // 先把「超出进程存活」的遗留活动收编/清理掉，避免多实例并存（见类注释第 4 条）
+        // 先把「超出进程存活」的遗留活动收编/清理掉，避免多实例并存
         if let adopted = adoptExistingActivity() {
             attach(to: adopted, reused: true)
             return
         }
 
         let attributes = TickerActivityAttributes(symbol: "BTC / USDT  永续")
-        let state = TickerActivityAttributes.ContentState(
-            price: 0, changePercent: 0, updatedAt: Date()
+        let content = ActivityContent(
+            state: TickerActivityAttributes.ContentState(
+                price: 0, changePercent: 0, updatedAt: Date().timeIntervalSince1970
+            ),
+            staleDate: nil
         )
 
+        // 优先带 pushType .token：拿推送 token，供后台/锁屏自推送。
+        // 若因缺少 Push 能力等原因失败，退回纯本地更新，保证实时活动仍然可用。
         do {
             let requested = try Activity.request(
-                attributes: attributes,
-                content: ActivityContent(state: state, staleDate: nil)
+                attributes: attributes, content: content, pushType: .token
             )
-            LogCollector.shared.append("live: 实时活动已启动（锁屏 + 灵动岛）")
+            LogCollector.shared.append("live: 实时活动已启动（锁屏 + 灵动岛，pushType=token）")
             attach(to: requested, reused: false)
         } catch {
-            LogCollector.shared.append("live: 启动失败 \(error.localizedDescription)")
+            LogCollector.shared.append(
+                "live: pushType .token 启动失败（\(error.localizedDescription)），退回本地模式"
+            )
+            do {
+                let requested = try Activity.request(
+                    attributes: attributes, content: content, pushType: nil
+                )
+                LogCollector.shared.append("live: 实时活动已启动（锁屏 + 灵动岛，无推送）")
+                attach(to: requested, reused: false)
+            } catch {
+                LogCollector.shared.append("live: 启动失败 \(error.localizedDescription)")
+            }
         }
     }
 
@@ -112,10 +111,6 @@ final class LiveActivityController {
     }
 
     /// App 前后台切换时由界面调用：作为取证日志的时间锚点。
-    ///
-    /// 为什么要记：排查「锁屏后灵动岛冻住」时，必须先确定锁屏的**确切时刻**，
-    /// 才能对齐日志。回到前台时汇报后台期间的更新总数，一眼就能看出
-    /// 「锁屏期间到底有没有在推」。
     func noteAppState(isActive: Bool) {
         if isActive {
             LogCollector.shared.append("live: App 回到前台（后台期间共更新 \(backgroundUpdateCount) 次）")
@@ -128,20 +123,10 @@ final class LiveActivityController {
     // MARK: - 收编遗留活动
 
     /// 收编/清理系统里遗留的实时活动，返回「应当继续使用」的那一条。
-    ///
-    /// **为什么必须做**：实时活动**不随 App 进程结束而消失** —— App 被系统回收、
-    /// 崩溃，或用户上滑杀掉进程时，已开启的活动仍会留在锁屏 / 灵动岛上（最长约 8 小时）。
-    /// 新进程启动时拿不到旧活动的引用，若直接再 `request` 一条，就会出现**多实例并存**；
-    /// 而旧实例**永远不会再被更新**，于是「几个数字里有的在动、有的冻住」。
-    ///
-    /// 策略：
-    /// - 挑**最近更新**的一条继续用（收编而非重建，避免灵动岛闪烁）
-    /// - 其余仍活跃的、以及所有已结束/被划掉的，全部结束清理
     private func adoptExistingActivity() -> Activity<TickerActivityAttributes>? {
         let all = Activity<TickerActivityAttributes>.activities
         guard !all.isEmpty else { return nil }
 
-        // 已结束 / 被划掉的顺手清掉（对已结束的活动调用 end 是幂等的）
         for stale in all where stale.activityState != .active {
             Task { await stale.end(nil, dismissalPolicy: .immediate) }
         }
@@ -162,23 +147,21 @@ final class LiveActivityController {
         return keep
     }
 
-    /// 绑定一条活动：订阅行情、盯状态、起重建定时器。新建与收编共用。
+    /// 绑定一条活动：订阅行情、盯状态、监听推送 token、起重建定时器。新建与收编共用。
     private func attach(to activity: Activity<TickerActivityAttributes>, reused: Bool) {
         self.activity = activity
         didLogInactive = false
         lastUpdateAt = nil
 
-        // 订阅行情多播（不影响报警引擎那条 onSnapshot 回调）
         cancellable = TickerStore.shared.tickPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
                 self?.update(price: snapshot.last, changePercent: snapshot.changePercent)
             }
 
-        // 盯住活动状态：被结束/划掉时自动重建（否则 update() 会静默失效）
         observeActivityState(activity)
+        observePushToken(activity)
 
-        // 到期自动重建
         recreateTimer?.invalidate()
         let timer = Timer(timeInterval: Self.recreateAfter, repeats: true) { [weak self] _ in
             self?.recreate()
@@ -186,24 +169,20 @@ final class LiveActivityController {
         RunLoop.main.add(timer, forMode: .common)
         recreateTimer = timer
 
-        // 收编场景下，卡片上还停在「上一个进程最后一次写入」的数字 —— 立即用当前行情刷一次，
-        // 免得用户先看到一个刚从冻结里醒来的旧价。
         if reused, let snapshot = TickerStore.shared.snapshot {
             update(price: snapshot.last, changePercent: snapshot.changePercent)
         }
     }
 
     /// 清理订阅、定时器与引用（**不结束活动本身**）。
-    ///
-    /// 拆出来是因为两条路径都需要它但后续动作不同：
-    /// - `stop()` 之后要 `end()` 掉活动
-    /// - `recreate()` 之后要 `await end()` 再新建（顺序很重要，见其注释）
-    /// - `rebuild()` 之后直接新建（活动已经死了，无需再 end）
     private func detach() {
         recreateTimer?.invalidate()
         recreateTimer = nil
         stateTask?.cancel()
         stateTask = nil
+        tokenTask?.cancel()
+        tokenTask = nil
+        pushToken = nil
         cancellable?.cancel()
         cancellable = nil
         lastUpdateAt = nil
@@ -213,8 +192,6 @@ final class LiveActivityController {
 
     // MARK: - 活动状态监听与自愈
 
-    /// 订阅活动状态变化。被系统结束或被用户划掉时，**本地引用不会失效**，
-    /// `update()` 会静默失效 —— 所以必须主动重建，否则锁屏数字永久冻住。
     private func observeActivityState(_ activity: Activity<TickerActivityAttributes>) {
         stateTask?.cancel()
         stateTask = Task { [weak self] in
@@ -235,10 +212,6 @@ final class LiveActivityController {
         }
     }
 
-    /// 活动终止后重建：清理旧引用与订阅，重新走一遍 start()。
-    ///
-    /// 此时活动已是 ended / dismissed 状态，`adoptExistingActivity` 会把它过滤掉，
-    /// 因此这里直接新建即可（不会把刚死的活动收编回来）。
     private func rebuild() {
         detach()
         backgroundUpdateCount = 0
@@ -255,14 +228,53 @@ final class LiveActivityController {
         }
     }
 
-    /// 诊断汇总（供健康心跳使用）：活动状态 + 后台更新次数 + **系统内活动总数**。
-    ///
-    /// 「总数」为什么重要：**大于 1 就说明出现了多实例** —— 那些旧实例再也不会更新，
-    /// 正是「灵动岛 / 锁屏上有几个数字、有的不动」的根因。
+    /// 诊断汇总（供健康心跳使用）：活动状态、实例数、推送 token 与推送成败计数。
     var diagnosticState: String {
         let total = Activity<TickerActivityAttributes>.activities.count
-        guard let activity = activity else { return "无活动（系统内残留 \(total) 条）" }
-        return "\(Self.describe(activity.activityState)) / 后台更新 \(backgroundUpdateCount) 次 / 系统内共 \(total) 条"
+        let base: String
+        if let activity = activity {
+            base = "\(Self.describe(activity.activityState)) / 后台更新 \(backgroundUpdateCount) 次 / 系统内共 \(total) 条"
+        } else {
+            base = "无活动（系统内残留 \(total) 条）"
+        }
+        let tok = pushToken != nil ? "有" : "无"
+        return "\(base) / token=\(tok) / 推送成\(APNsPusher.shared.sentCount)败\(APNsPusher.shared.failedCount)"
+    }
+
+    // MARK: - 推送 token
+
+    /// 监听活动推送 token 的获取与轮换。
+    ///
+    /// token 可能晚于活动创建才就绪，故既要读一次 `activity.pushToken`，
+    /// 也要持续订阅 `pushTokenUpdates`（token 会轮换）。
+    private func observePushToken(_ activity: Activity<TickerActivityAttributes>) {
+        tokenTask?.cancel()
+
+        if let data = activity.pushToken {
+            pushToken = Self.hexToken(data)
+            LogCollector.shared.append("live: 已取得推送 token（\(String(pushToken!.prefix(8)))…）")
+        }
+
+        tokenTask = Task { [weak self] in
+            for await data in activity.pushTokenUpdates {
+                await MainActor.run {
+                    guard let self = self else { return }
+                    self.pushToken = Self.hexToken(data)
+                    LogCollector.shared.append("live: 推送 token 已更新（\(String(self.pushToken!.prefix(8)))…）")
+                }
+            }
+        }
+    }
+
+    private static func hexToken(_ data: Data) -> String {
+        let hexDigits = Array("0123456789abcdef".utf8)
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(data.count * 2)
+        for byte in data {
+            bytes.append(hexDigits[Int(byte >> 4)])
+            bytes.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(bytes: bytes, encoding: .utf8) ?? ""
     }
 
     // MARK: - 更新
@@ -270,9 +282,7 @@ final class LiveActivityController {
     private func update(price: Double, changePercent: Double) {
         guard let activity = activity else { return }
 
-        // 只有 ended / dismissed 才算「终止」。注意 .stale 只是系统的「内容过期标记」，
-        // 活动仍然可以继续更新 —— 若把它也当作终止，我们就会**自己把推送停掉**，
-        // 表现就是界面在该状态下永久冻住（日志里只留一行"暂停更新"）。
+        // 只有 ended / dismissed 才算「终止」；.stale 仍可继续更新。
         let activityState = activity.activityState
         guard activityState == .active || activityState == .stale else {
             if !didLogInactive {
@@ -285,7 +295,6 @@ final class LiveActivityController {
         }
         didLogInactive = false
 
-        // 节流：前台跟随行情（约 1 秒/次），后台/锁屏放宽到 15 秒以避开系统节流
         let isBackground = UIApplication.shared.applicationState != .active
         let interval = isBackground ? Self.backgroundUpdateInterval : Self.foregroundUpdateInterval
         if let last = lastUpdateAt, Date().timeIntervalSince(last) < interval {
@@ -293,26 +302,50 @@ final class LiveActivityController {
         }
         lastUpdateAt = Date()
 
-        // 取证：累计后台/锁屏期间的更新次数，由健康心跳每 10 秒汇总成一行输出。
-        // 刻意不在这里单独打点 —— 心跳已经带出了这个计数，少一行噪音就能让
-        // 300 行环形缓冲多装些关键日志。
         if isBackground {
             backgroundUpdateCount += 1
         }
 
         let state = TickerActivityAttributes.ContentState(
-            price: price, changePercent: changePercent, updatedAt: Date()
+            price: price, changePercent: changePercent, updatedAt: Date().timeIntervalSince1970
         )
-        Task {
-            await activity.update(ActivityContent(state: state, staleDate: nil))
+
+        if isBackground, let token = pushToken, APNsPusher.shared.isReady {
+            // 后台/锁屏：走 APNs 推送（系统采用推送；本地 write 在此态不被采用）
+            APNsPusher.shared.pushUpdate(state, token: token, topic: Self.topic) { _ in }
+        } else {
+            // 前台 / 无 token / 未配置凭据：本地更新
+            Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        }
+    }
+
+    // MARK: - 测试推送（诊断用）
+
+    /// 当前推送 token（供界面显示）
+    var pushTokenHex: String? { pushToken }
+
+    /// 手动发一条测试推送，验证「密钥 / 能力 / 环境 / topic」全链路是否打通。
+    func sendTestPush(completion: @escaping (Bool) -> Void) {
+        guard let token = pushToken, let snapshot = TickerStore.shared.snapshot else {
+            LogCollector.shared.append("apns: 无法测试推送——无 token 或行情")
+            completion(false)
+            return
+        }
+        let state = TickerActivityAttributes.ContentState(
+            price: snapshot.last,
+            changePercent: snapshot.changePercent,
+            updatedAt: Date().timeIntervalSince1970
+        )
+        APNsPusher.shared.pushUpdate(state, token: token, topic: Self.topic) { ok in
+            LogCollector.shared.append(ok ? "apns: 测试推送成功（HTTP 200）" : "apns: 测试推送失败")
+            completion(ok)
         }
     }
 
     /// 结束旧活动并重新开始 —— 绕过「约 8 小时后被系统结束」的上限。
     ///
-    /// 注意：必须**等结束完成**再新建。`end()` 是异步的，若立刻请求新活动，
-    /// 旧活动仍会短暂出现在 `Activity.activities` 里，可能被 `adoptExistingActivity`
-    /// 当成「遗留活动」又收编回来 —— 那就等于没重建。
+    /// 注意：必须**等结束完成**再新建，否则旧活动会短暂残留在 `Activity.activities`
+    /// 里被 `adoptExistingActivity` 收编回来。
     private func recreate() {
         LogCollector.shared.append("live: 到达重建周期，重启实时活动")
         let old = activity

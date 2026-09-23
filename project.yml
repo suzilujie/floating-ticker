@@ -40,6 +40,8 @@ targets:
         DEVELOPMENT_TEAM: "S2GX2R7LD5"
         INFOPLIST_FILE: Support/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
+        # Push Notifications 能力（APNs 推送更新实时活动锁屏显示所需）
+        CODE_SIGN_ENTITLEMENTS: Support/FloatingTicker.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
         MARKETING_VERSION: "0.1"

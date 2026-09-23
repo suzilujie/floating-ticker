@@ -124,7 +124,7 @@ private struct LockScreenCard: View {
                     .foregroundStyle(TickerLiveActivityWidget.changeColor(context.state.changePercent))
                 // 精确到秒：锁屏上一眼就能看出「最后更新是几秒前，还是几分钟前」。
                 // 排查「数字冻住」这类问题时，这个时间戳就是设备端的地面真相。
-                Text(context.state.updatedAt, format: .dateTime.hour().minute().second())
+                Text(Date(timeIntervalSince1970: context.state.updatedAt), format: .dateTime.hour().minute().second())
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }

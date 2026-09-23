@@ -100,6 +100,9 @@ struct ContentView: View {
                 // 价格报警：目标价、容差、状态与试听
                 AlertSettingsView()
 
+                // APNs 推送凭据与链路测试（锁屏更新）
+                APNsSettingsView()
+
                 // 数据源可达性：一键探测所有源，直观看清此刻哪个源能用
                 SourceProbeView()
 

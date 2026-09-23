@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Push Notifications 能力：APNs 推送更新实时活动（锁屏显示）所必需。
+	     值 production 对应 Ad Hoc / App Store 分发（开发证书才用 development）。 -->
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>

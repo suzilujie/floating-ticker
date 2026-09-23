@@ -17,8 +17,11 @@ struct TickerActivityAttributes: ActivityAttributes {
         var price: Double
         /// 24h 涨跌幅（百分比，如 -1.23 表示 -1.23%）
         var changePercent: Double
-        /// 该价格的时间
-        var updatedAt: Date
+        /// 该价格的时间（epoch 秒）。
+        ///
+        /// 用 Double 而非 Date：APNs 推送路径的 `content-state` 是 JSON，
+        /// `Date` 的编码策略在本地与推送两端存在歧义；epoch 秒无歧义。
+        var updatedAt: Double
     }
 
     /// 固定不变的内容
