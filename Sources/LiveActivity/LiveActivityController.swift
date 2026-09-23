@@ -11,7 +11,7 @@ import UIKit
 /// 「App 挂起也要更新」设计的通道；前台仍用本地 `update()`（更快、无网络往返）。
 ///
 /// 已处理的平台约束：
-/// 1. 更新频率：前台 ~1 次/秒；后台/锁屏改走推送（推送本身仍受系统调度）
+/// 1. 更新频率：前台 ~1 次/秒（本地）；后台/锁屏 ~1 次/2.5 秒（走推送，避开推送速率预算）
 /// 2. 生命周期：约 8 小时被系统结束 → 7.5 小时主动重建
 /// 3. 状态会变（ended / dismissed）→ 订阅 `activityStateUpdates` 自动重建
 /// 4. 活动「超出进程」存活 → 启动时收编遗留活动，避免多实例
@@ -42,8 +42,22 @@ final class LiveActivityController {
     /// 活动非 active 时只记一次日志，避免每秒刷屏
     private var didLogInactive = false
 
+    /// 前台更新间隔：跟随行情（约 1 秒/条）。本地 `update()` 无网络往返，越快越跟手。
     private static let foregroundUpdateInterval: TimeInterval = 1.0
-    private static let backgroundUpdateInterval: TimeInterval = 1.0
+
+    /// 后台 / 锁屏更新间隔。
+    ///
+    /// 后台走 APNs 自推送，而**推送本身有速率预算** —— 超了返回 429 `TooManyRequests`。
+    /// 注意这与曾经踩过的 `TooManyProviderTokenUpdates` 是**两个不同的原因**：
+    /// 后者是 provider token 换得太勤，前者是**推得太密**。
+    ///
+    /// 取 2.5 秒（0.4 次/秒）：相对 1 次/秒减半还多，给系统留出余量；
+    /// 锁屏上仍是「几秒一跳」，视觉上跟得住。
+    ///
+    /// 判据：若日志出现 `apns: ✗ 推送失败 … TooManyRequests`，说明 2.5 秒仍偏密，
+    /// 继续放宽到 3~5 秒即可 —— 这个值可以放心往下调，代价只是刷新变钝。
+    private static let backgroundUpdateInterval: TimeInterval = 2.5
+
     private static let recreateAfter: TimeInterval = 7.5 * 3600
 
     private init() {}
