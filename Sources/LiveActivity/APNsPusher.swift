@@ -94,7 +94,7 @@ final class APNsPusher {
         let payloadB64 = payloadData.base64URL()
         let signingInput = headerB64 + "." + payloadB64
 
-        guard let key = try? P256.Signing.PrivateKey(pemRepresentation: Data(s.p8Content.utf8)),
+        guard let key = try? P256.Signing.PrivateKey(pemRepresentation: s.p8Content),
               let signature = try? key.signature(for: Data(signingInput.utf8)) else { return nil }
 
         return signingInput + "." + signature.rawRepresentation.base64URL()
