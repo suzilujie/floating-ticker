@@ -1,22 +1,26 @@
 import Foundation
 
-/// 双源竞速的永续行情源：**同时**向 OKX 与 Binance 各拉一次，先返回者胜。
+/// 多源 REST 行情：**OKX 与 Binance 同时竞速，Gate 作为兜底**。
 ///
-/// 三条设计要点，按重要性排序：
+/// 四条设计要点，按重要性排序：
 ///
 /// 1. **REST 取代 WS 的根本理由**：REST 每次请求都是独立的，**没有"连接状态"可以半死**。
 ///    WS 在真机上屡屡进入"TCP 还活着但不推数据、且不报错"的半死态，只能靠看门狗兜底，
 ///    代价是十几秒的行情空档；REST 的失败是明确的失败，下一个周期自然重试。
 ///
 /// 2. **粘住当前的所，避免两个所之间横跳**：
-///    两家交易所有基差（同一时刻的永续价差约 0.01%~0.09%，8 万价位上就是几十美元）。
+///    两家交易所有基差（同一时刻永续价差约 0.01%~0.09%，8 万价位上就是几十美元）。
 ///    若每一轮都"谁快用谁"，价格会每 2 秒跳一次 —— 不只是肉眼可见的抖动，
-///    更会让报警的「穿越判定」被跨所跳变反复污染（上层每收到一次源变更就会重置基准价，
+///    更会让报警的「穿越判定」被跨所跳变反复污染（上层每收到一次源变更就重置基准价，
 ///    重置太频繁等于报警失效）。
 ///    因此策略是：**当前所在这一轮也拿到数据时就继续用它**；只有它失败/超时才交给另一家。
-///    首轮则由先返回者决定 —— 即"先拉到谁的用谁的"。
+///    首轮由先返回者决定 —— 即"先拉到谁的用谁的"。
 ///
-/// 3. **备源结果要暂存**：当前所失败与备源成功是两条独立的完成回调，顺序不确定。
+/// 3. **Gate 是兜底，不是第三个竞速者**：只有当 OKX 与 Binance 本轮**全部失败**时，
+///    才额外发一个 Gate 请求。这样正常情况下多源冗余的代价为零（少一次请求、少一份耗电），
+///    而在两家同时抽风（比如都在维护、或代理规则把这俩都挡了）时仍有行情可用。
+///
+/// 4. **备源结果要暂存**：当前所失败与备源成功是两条独立的完成回调，顺序不确定。
 ///    若备源先成功、当前所后失败，这一轮的数据不能被丢掉 —— 故见 `standby`。
 final class RacingFuturesRestSource: MarketDataSource {
 
@@ -46,16 +50,26 @@ final class RacingFuturesRestSource: MarketDataSource {
     /// 若某家变慢，本轮会稍长，下一轮顺延（见 `poll` 里的 pending 判断），不会堆积请求。
     private static let timeout: TimeInterval = 2.5
 
-    // MARK: - 两个候选所
+    // MARK: - 候选源
 
     private enum Venue: String, CaseIterable {
         case okx
         case binance
+        case gate
+
+        /// 0 = 主源（每轮**同时**发出，先返回者优先）；1 = 兜底源（仅主源全败时启用）。
+        var rank: Int {
+            switch self {
+            case .okx, .binance: return 0
+            case .gate: return 1
+            }
+        }
 
         var display: String {
             switch self {
             case .okx: return "OKX"
             case .binance: return "Binance"
+            case .gate: return "Gate"
             }
         }
 
@@ -68,9 +82,16 @@ final class RacingFuturesRestSource: MarketDataSource {
                 // Binance **USDT 本位永续**（fapi），与 OKX 的 SWAP 同类；
                 // 用现货（api.binance.com）会引入"现货 vs 永续"的额外基差，故不用。
                 return URL(string: "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT")!
+            case .gate:
+                return URL(string: "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=BTC_USDT")!
             }
         }
     }
+
+    /// 每轮同时竞速的主源
+    private static let primaries: [Venue] = [.okx, .binance]
+    /// 主源本轮全部失败时才启用的兜底源
+    private static let fallback: Venue = .gate
 
     /// 单次请求的结局。
     ///
@@ -87,8 +108,14 @@ final class RacingFuturesRestSource: MarketDataSource {
     private var timer: Timer?
     private var isStopped = false
 
-    /// 本轮尚未返回的请求数。非 0 时跳过本轮 —— 避免慢网络下请求堆积。
+    /// 本轮尚未返回的请求数（含兜底）。非 0 时跳过本轮 —— 避免慢网络下请求堆积。
     private var pending = 0
+    /// 主源中尚未返回的个数
+    private var primariesPending = 0
+    /// 本轮主源是否已有成功（有则不必再拉兜底源）
+    private var primarySucceeded = false
+    /// 兜底源本轮是否已发出
+    private var fallbackSent = false
 
     /// 本轮已失败的所
     private var failedThisRound = Set<Venue>()
@@ -105,14 +132,12 @@ final class RacingFuturesRestSource: MarketDataSource {
     func start() {
         isStopped = false
         currentVenue = nil
-        pending = 0
-        failedThisRound.removeAll()
-        standby = nil
-        didLogParseFailure = false
+        resetRound()
 
         onState?(.connecting)
         LogCollector.shared.append(
-            "market: 启动双源轮询（OKX + Binance，每 \(Int(Self.interval)) 秒，先返回者优先）"
+            "market: 启动 REST 轮询（每 \(Int(Self.interval)) 秒）"
+                + "｜主源 OKX + Binance 竞速，兜底 \(Self.fallback.display)"
         )
 
         let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
@@ -127,10 +152,19 @@ final class RacingFuturesRestSource: MarketDataSource {
         isStopped = true
         timer?.invalidate()
         timer = nil
-        pending = 0
-        standby = nil
+        resetRound()
         onState?(.idle)
-        LogCollector.shared.append("market: 双源轮询已停止")
+        LogCollector.shared.append("market: REST 轮询已停止")
+    }
+
+    private func resetRound() {
+        pending = 0
+        primariesPending = 0
+        primarySucceeded = false
+        fallbackSent = false
+        failedThisRound.removeAll()
+        standby = nil
+        didLogParseFailure = false
     }
 
     // MARK: - 轮询
@@ -139,8 +173,11 @@ final class RacingFuturesRestSource: MarketDataSource {
         guard !isStopped, pending == 0 else { return }
         failedThisRound.removeAll()
         standby = nil
-        pending = Venue.allCases.count
-        for venue in Venue.allCases { fetch(venue) }
+        primarySucceeded = false
+        fallbackSent = false
+        primariesPending = Self.primaries.count
+        pending = Self.primaries.count
+        for venue in Self.primaries { fetch(venue) }
     }
 
     private func fetch(_ venue: Venue) {
@@ -177,16 +214,15 @@ final class RacingFuturesRestSource: MarketDataSource {
     private func handle(_ outcome: Outcome, from venue: Venue) {
         guard !isStopped else { return }
         pending = max(pending - 1, 0)
+        if venue.rank == 0 { primariesPending = max(primariesPending - 1, 0) }
 
         switch outcome {
         case .success(let snapshot):
-            if currentVenue == nil || currentVenue == venue {
-                deliver(venue: venue, snapshot: snapshot)
-            } else if failedThisRound.contains(currentVenue!) {
-                // 当前所本轮已失败 → 直接接管
+            if venue.rank == 0 { primarySucceeded = true }
+            if shouldAdopt(venue) {
                 deliver(venue: venue, snapshot: snapshot)
             } else {
-                // 当前所还没结论 → 先暂存，等它失败时顶上
+                // 等当前所的结论，先存着（见 `standby` 注释）
                 standby = (venue, snapshot)
             }
 
@@ -199,11 +235,37 @@ final class RacingFuturesRestSource: MarketDataSource {
                     deliver(venue: parked.venue, snapshot: parked.snapshot)
                 }
             }
-            // 两家都失败才算真的失败（只有一家失败时另一家会顶上）
+            // 所有候选都失败才算真的失败（只要有一家成功，这轮就是好的）
             if failedThisRound.count == Venue.allCases.count {
                 onState?(.failed(reason))
             }
         }
+
+        // 主源阶段收尾：主源一个都没成功 → 启动兜底源（Gate）
+        if primariesPending == 0, !primarySucceeded, !fallbackSent {
+            fallbackSent = true
+            pending += 1
+            LogCollector.shared.append(
+                "market: 主源本轮全部失败 → 改用兜底源 \(Self.fallback.display) REST"
+            )
+            fetch(Self.fallback)
+        }
+    }
+
+    /// 是否应当**采用**这条结果（否则先暂存等当前所的结论）。
+    ///
+    /// 规则按优先级：
+    ///  1. 还没有当前所 → 采用（首轮"先返回者胜"）
+    ///  2. 就是当前所 → 采用（粘住，避免横跳）
+    ///  3. 当前所本轮已失败 → 采用（顶上）
+    ///  4. 当前所是兜底源、而这条来自主源 → 采用（**主源优先于兜底源**，
+    ///     否则一旦掉到 Gate，主源恢复后也回不来 —— 而 Gate 的基差更大）
+    private func shouldAdopt(_ venue: Venue) -> Bool {
+        guard let current = currentVenue else { return true }
+        if current == venue { return true }
+        if failedThisRound.contains(current) { return true }
+        if venue.rank == 0, current.rank > 0 { return true }
+        return false
     }
 
     private func deliver(venue: Venue, snapshot: TickerSnapshot) {
@@ -218,42 +280,50 @@ final class RacingFuturesRestSource: MarketDataSource {
 
     // MARK: - 解析
 
-    /// 解析两家交易所的 ticker 响应（已核对各自的官方字段名）。
+    /// 解析三家交易所的 ticker 响应（字段名以各自官方文档为准）。
     ///
     /// - OKX：`{"code":"0","data":[{"instId":"…","last":"…","open24h":"…"}]}`
     ///   **OKX 不返回 24h 涨跌幅**，只给 `open24h`（24 小时前开盘价），百分比需自己算。
     /// - Binance：`{"symbol":"BTCUSDT","lastPrice":"…","priceChangePercent":"0.71"}`
     ///   `priceChangePercent` 已经是百分数值，直接用。
+    /// - Gate：根节点是**数组**（与另外两家不同）：`[{"contract":"BTC_USDT","last":"…",
+    ///   "change_percentage":"…"}]`，涨跌幅同样是百分数值。
     private static func parse(_ data: Data, venue: Venue) -> TickerSnapshot? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
 
         switch venue {
         case .okx:
-            guard let list = root["data"] as? [[String: Any]],
+            guard let object = root as? [String: Any],
+                  let list = object["data"] as? [[String: Any]],
                   let first = list.first,
                   let last = Double(first["last"] as? String ?? "") else { return nil }
             let open24h = Double(first["open24h"] as? String ?? "") ?? 0
             let change = open24h > 0 ? (last / open24h - 1) * 100 : 0
-            return TickerSnapshot(
-                symbol: "BTC-USDT-SWAP",
-                displayName: "BTC / USDT  永续",
-                last: last,
-                changePercent: change,
-                updatedAt: Date()
-            )
+            return snapshot(last: last, change: change, symbol: "BTC-USDT-SWAP")
 
         case .binance:
-            guard let last = Double(root["lastPrice"] as? String ?? "") else { return nil }
-            let change = Double(root["priceChangePercent"] as? String ?? "") ?? 0
-            return TickerSnapshot(
-                symbol: "BTCUSDT",
-                displayName: "BTC / USDT  永续",
-                last: last,
-                changePercent: change,
-                updatedAt: Date()
-            )
+            guard let object = root as? [String: Any],
+                  let last = Double(object["lastPrice"] as? String ?? "") else { return nil }
+            let change = Double(object["priceChangePercent"] as? String ?? "") ?? 0
+            return snapshot(last: last, change: change, symbol: "BTCUSDT")
+
+        case .gate:
+            guard let array = root as? [[String: Any]],
+                  let first = array.first,
+                  let last = Double(first["last"] as? String ?? "") else { return nil }
+            let change = Double(first["change_percentage"] as? String ?? "") ?? 0
+            return snapshot(last: last, change: change,
+                            symbol: first["contract"] as? String ?? "BTC_USDT")
         }
+    }
+
+    private static func snapshot(last: Double, change: Double, symbol: String) -> TickerSnapshot {
+        TickerSnapshot(
+            symbol: symbol,
+            displayName: "BTC / USDT  永续",
+            last: last,
+            changePercent: change,
+            updatedAt: Date()
+        )
     }
 }

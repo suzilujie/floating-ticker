@@ -46,6 +46,11 @@ enum SourceProbe {
                isWebSocket: false),
         Target(name: "Binance 永续 REST",
                url: URL(string: "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT")!,
+               isWebSocket: false),
+        // 兜底源：仅当上面两家本轮都失败时才被实际拉取（见 RacingFuturesRestSource）。
+        // 面板里照样列出 —— 排查"为什么掉到兜底"时，得先知道它此刻通不通。
+        Target(name: "Gate 永续 REST（兜底）",
+               url: URL(string: "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=BTC_USDT")!,
                isWebSocket: false)
     ]
 
