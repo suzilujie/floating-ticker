@@ -36,21 +36,16 @@ enum SourceProbe {
     }
 
     /// 全部待探测源（供「数据源可达性」面板展示）。顺序即界面显示顺序。
+    ///
+    /// 只列**当前真正在用的两个源**：行情已改为「OKX + Binance 双源竞速 REST 轮询」
+    /// （见 `RacingFuturesRestSource`）。旧版列出的 WS 与 Gate / CoinEx 端点已全部弃用，
+    /// 继续留在面板里只会把排查方向带偏。
     static let targets: [Target] = [
-        Target(name: "Gate 永续 WS",
-               url: URL(string: "wss://fx-ws.gateio.ws/v4/ws/usdt")!,
-               isWebSocket: true),
-        Target(name: "OKX 永续 WS",
-               url: URL(string: "wss://ws.okx.com:8443/ws/v5/public")!,
-               isWebSocket: true),
-        Target(name: "Gate 永续 REST",
-               url: URL(string: "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=BTC_USDT")!,
+        Target(name: "OKX 永续 REST",
+               url: URL(string: "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP")!,
                isWebSocket: false),
-        Target(name: "CoinEx 永续 REST",
-               url: URL(string: "https://api.coinex.com/v2/futures/ticker?market=BTCUSDT")!,
-               isWebSocket: false),
-        Target(name: "OKX REST",
-               url: URL(string: "https://www.okx.com/api/v5/public/time")!,
+        Target(name: "Binance 永续 REST",
+               url: URL(string: "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT")!,
                isWebSocket: false)
     ]
 
@@ -181,31 +176,7 @@ enum SourceProbe {
         }
     }
 
-    // MARK: - OKX 专用探测（TickerStore 决定源优先级用）
-
-    /// OKX 永续 WS 端点，与 `OKXFuturesWebSocketSource` 使用的**完全一致**。
-    private static let okxWSURL = URL(string: "wss://ws.okx.com:8443/ws/v5/public")!
-
-    /// 探测 OKX 是否可用。回调保证在主线程。
-    ///
-    /// **探测的是实际使用的 WS 端点，而不是 REST 端点** ——
-    /// 「可达」应当意味着「这个源真的能用」。若探测 `www.okx.com`（REST），
-    /// 当代理分流规则只放行 REST、不放行 WS 时就会误判为可用，
-    /// 进而出现「切到 OKX WS → 连不上降级 → 探测又说可达 → 又切回」的反复横跳。
-    ///
-    /// - Parameter log: 是否写入日志。启动探测需要（作为决策依据），
-    ///   而每 60 秒一次的定期重评不需要 —— 否则会把环形日志刷满，
-    ///   冲掉更要紧的自愈记录（重建 / 降级 / 回绕）。
-    static func probeOKX(log: Bool = true, completion: @escaping (Bool) -> Void) {
-        let target = Target(name: "OKX 永续 WS", url: okxWSURL, isWebSocket: true)
-        probeWebSocket(target) { result in
-            if log {
-                LogCollector.shared.append(
-                    "probe: OKX \(result.isReachable ? "可达" : "不可达")"
-                        + "（\(result.latencyMs)ms，\(result.detail)）"
-                )
-            }
-            DispatchQueue.main.async { completion(result.isReachable) }
-        }
-    }
+    // 说明：原先这里还有一个 `probeOKX`（探测 OKX 永续 WS 端点，供 TickerStore
+    // 决定源优先级用）。改用 REST 双源竞速后，源切换不再依赖探测，它已无用；
+    // 而它探测的是已弃用的 WS 端点，留着只会误导 —— 故删除。
 }
