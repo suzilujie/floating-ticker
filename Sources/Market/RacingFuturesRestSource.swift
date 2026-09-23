@@ -29,7 +29,13 @@ final class RacingFuturesRestSource: MarketDataSource {
     var onVenueChanged: ((String) -> Void)?
 
     /// 对外显示的源名。首次响应到达前是中性的占位名。
-    var name: String { "\(currentVenue?.display ?? "OKX/Binance") 永续 REST" }
+    ///
+    /// 刻意拆成两句、而不是写成 `"\(a ?? "b")"`：嵌套字符串字面量在插值里的
+    /// 可读性差，兼容性也容易踩坑，拆开最稳。
+    var name: String {
+        let venue = currentVenue?.display ?? "OKX/Binance"
+        return "\(venue) 永续 REST"
+    }
 
     // MARK: - 配置
 
@@ -64,6 +70,15 @@ final class RacingFuturesRestSource: MarketDataSource {
                 return URL(string: "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT")!
             }
         }
+    }
+
+    /// 单次请求的结局。
+    ///
+    /// 为什么不用 `Result<TickerSnapshot, String>`：**`Result` 的 `Failure` 必须符合
+    /// `Error`，而 `String` 不符合** —— 那样写会直接编译失败（本项目踩过这个坑）。
+    private enum Outcome {
+        case success(TickerSnapshot)
+        case failure(String)
     }
 
     // MARK: - 运行时状态
@@ -138,7 +153,7 @@ final class RacingFuturesRestSource: MarketDataSource {
             guard let self = self else { return }
 
             // 解析放后台线程；状态变更统一回主线程（`pending` / `standby` 都是主线程独占）
-            let outcome: Result<TickerSnapshot, String>
+            let outcome: Outcome
             if let error = error {
                 outcome = .failure(error.localizedDescription)
             } else if let data = data, let snapshot = Self.parse(data, venue: venue) {
@@ -159,7 +174,7 @@ final class RacingFuturesRestSource: MarketDataSource {
         }.resume()
     }
 
-    private func handle(_ outcome: Result<TickerSnapshot, String>, from venue: Venue) {
+    private func handle(_ outcome: Outcome, from venue: Venue) {
         guard !isStopped else { return }
         pending = max(pending - 1, 0)
 
