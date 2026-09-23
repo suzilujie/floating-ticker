@@ -86,11 +86,20 @@ struct ContentView: View {
                                 Text("悬浮窗")
                                     .foregroundStyle(.secondary)
                                 Spacer()
-                                Text(pip.isActive ? "已开启" : "点此开启")
+                                Text(pip.isActive ? "已开启" : (pip.isStarting ? "启动中…" : "点此开启"))
                                     .foregroundStyle(pip.isActive ? Color.secondary : Color.accentColor)
                             }
                             .font(.subheadline)
                             .contentShape(Rectangle())
+                        }
+
+                        // 只有"被系统静默忽略"这条路径才会出现这句话：
+                        // 它没有任何错误回调，用户点了没反应却无从得知，所以把
+                        // 可执行的下一步直接写出来（按 Home 键即自动转入浮窗）。
+                        if !pip.isActive, let note = pip.lastStartNote {
+                            Text(note)
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
                         }
                     } else {
                         InfoRow(title: "悬浮窗", value: "本机不支持画中画")

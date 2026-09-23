@@ -26,6 +26,10 @@ final class PiPController: NSObject, ObservableObject {
     /// 报警期间提高帧率的订阅（见 alertFrameInterval 注释）
     private var alertCancellable: AnyCancellable?
 
+    /// 启动重试预算（次数）。取 8：既覆盖"内容未就绪"的等待，
+    /// 也给够"被系统静默忽略后重发"的机会。
+    private static let startRetryBudget = 8
+
     /// 常态帧间隔：1 fps 心跳保活
     private static let idleFrameInterval: TimeInterval = 1.0
     /// 报警帧间隔：4 fps。闪烁为 2 Hz（每相位 0.25 秒），
@@ -48,8 +52,22 @@ final class PiPController: NSObject, ObservableObject {
     /// 本次启动是否真的收到了 didStart（用于识别"启动请求被系统静默忽略"）
     private var didStartFired = false
 
-    /// 画中画是否处于活动状态（对外可观察，界面据此显示状态）
+    /// 画中画**是否真的已被系统显示出来**（对外可观察，界面据此显示状态）。
+    ///
+    /// 只在 `didStart` 里置 true —— 不能在"请求刚发出"时就置 true：
+    /// 那样界面会提前谎报「已开启」，且此时再点按钮会被守卫静默吞掉，
+    /// 用户看到的现象就是"点了没反应"。
     @Published private(set) var isActive = false
+
+    /// 启动请求是否正在途中（含重试）。与 `isActive` 严格区分：
+    /// `isActive` = 系统已显示浮窗；`isStarting` = 请求已发出、还没有结果。
+    @Published private(set) var isStarting = false
+
+    /// 最近一次启动尝试的结局（供界面给出可执行的下一步）。
+    ///
+    /// 只在"被系统静默忽略、连错误回调都没有"这条路径上设置 ——
+    /// 否则用户点了没反应，却完全无从得知为什么。
+    @Published private(set) var lastStartNote: String?
 
     private override init() {
         super.init()
@@ -70,7 +88,12 @@ final class PiPController: NSObject, ObservableObject {
     // MARK: - 对外接口
 
     func start() {
-        guard !isActive else { return }
+        // 已显示 / 正在启动途中都不重复发起。
+        // 必须同时看 isStarting：否则用户在"请求已发出、系统还没响应"的空档里
+        // 再点一次，会被静默吞掉（表现为"点了没反应"）。
+        guard !isActive, !isStarting else { return }
+        isStarting = true
+        lastStartNote = nil
         LogCollector.shared.append("pip: start begin")
 
         // 音频会话：PiP 在后台存活并持续刷新的关键前提
@@ -121,52 +144,60 @@ final class PiPController: NSObject, ObservableObject {
         pipController = controller
 
         framePump.start()
-        isActive = true
         didStartFired = false
         LogCollector.shared.append("pip: start framePump started, 准备启动 PiP")
-        attemptStartPiP(retry: 4)
+        attemptStartPiP(retry: Self.startRetryBudget)
     }
 
     /// 尝试启动画中画。
     ///
-    /// isPictureInPicturePossible 只有在内容真正就绪后才为 true，
-    /// 因此在同一时刻立刻调用可能失败；这里做有限重试。
+    /// 为什么要重试而不是调一次就完 —— 真机日志里两个"不友好"的路径都出现过：
+    ///   ① `isPictureInPicturePossible` 起初为 false，等内容就绪才转 true；
+    ///   ② 即便为 true，`startPictureInPicture()` 也可能被**静默忽略**：
+    ///      既不报错、也不走 failedToStartPictureInPictureWithError，只是没有 didStart。
+    /// ② 通常是瞬时的，隔一两秒重发一次就能成功，所以这里对"没等到 didStart"
+    /// 也计入重试，而不是直接判失败。
     private func attemptStartPiP(retry: Int) {
         guard let controller = pipController else { return }
+        // 用 isStarting 当令牌：用户已 stop / 已被新的 start 取代时，放弃这轮重试
+        guard isStarting else { return }
+
         guard retry > 0 else {
-            LogCollector.shared.append("pip: start 重试耗尽，放弃启动 PiP")
-            isActive = false   // 状态必须如实反映"没起来"，否则界面会谎报已开启
+            LogCollector.shared.append("pip: start 重试 \(Self.startRetryBudget) 次仍无 didStart，放弃")
+            isActive = false
+            isStarting = false
+            // 这条路径连错误回调都没有，不写出来用户只能干瞪眼
+            lastStartNote = "浮窗启动被系统忽略：按 Home 键返回桌面即会自动出现（也可再点一次）"
             return
         }
 
-        if controller.isPictureInPicturePossible {
-            LogCollector.shared.append("pip: start pipPossible=true，调用 startPictureInPicture")
-            controller.startPictureInPicture()
-
-            // 看门狗：iOS 可能"静默忽略"启动请求（不报错、不回调）。
-            // 3 秒内没等到 didStart 就判定为未开启，并把结论写进日志 ——
-            // 这是判断"自动重启浮窗"能否在 iOS 26 上成立的唯一依据。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                guard let self = self else { return }
-                guard self.isActive, !self.didStartFired else { return }
-                self.isActive = false
-                LogCollector.shared.append("pip: 启动请求未被系统受理（3 秒内无 didStart）")
-            }
-        } else {
-            LogCollector.shared.append("pip: start pipPossible=false，0.5s 后重试（剩余 \(retry - 1)）")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        guard controller.isPictureInPicturePossible else {
+            LogCollector.shared.append("pip: start pipPossible=false，0.6s 后重试（剩余 \(retry - 1)）")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.attemptStartPiP(retry: retry - 1)
             }
+            return
+        }
+
+        LogCollector.shared.append("pip: start pipPossible=true，调用 startPictureInPicture（剩余 \(retry)）")
+        controller.startPictureInPicture()
+
+        // 看门狗：静默忽略没有任何回调，只能靠"没等到 didStart"判定，然后重发。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self = self, self.isStarting, !self.didStartFired else { return }
+            LogCollector.shared.append("pip: 启动请求未被系统受理（2.5s 内无 didStart），再试一次")
+            self.attemptStartPiP(retry: retry - 1)
         }
     }
 
     func stop() {
-        guard isActive else { return }
+        guard isActive || isStarting else { return }
         pipController?.stopPictureInPicture()
         framePump.stop()
         removeDisplayLayer()
         KeepAliveAudio.shared.stop()
         isActive = false
+        isStarting = false
         LogCollector.shared.append("pip: stop done")
     }
 
@@ -355,7 +386,9 @@ extension PiPController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         isActive = true
+        isStarting = false
         didStartFired = true
+        lastStartNote = nil
         LogCollector.shared.append("pip: didStart")
     }
 
@@ -364,6 +397,7 @@ extension PiPController: AVPictureInPictureControllerDelegate {
     ) {
         framePump.stop()
         isActive = false
+        isStarting = false
         didStartFired = false
         // 必须移除：否则图层会以原始尺寸贴在窗口左上角，盖住 App 界面（见 removeDisplayLayer）
         removeDisplayLayer()
